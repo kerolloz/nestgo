@@ -1,9 +1,8 @@
 # nestgo Architecture
 
-> **Status:** This document records the target architecture and the decision behind it.
-> The code currently implements the *previous* architecture (an embedded compiler); the
-> migration is Phase 2 below. Where current and target differ, this document says so
-> explicitly.
+> **Status:** Implemented. nestgo drives the project's own TypeScript 7 compiler as a
+> subprocess; the embedded compiler and its `go:linkname` shims are gone. Remaining work
+> is listed under Roadmap.
 
 ## 1. What nestgo is
 
@@ -67,18 +66,17 @@ nestgo (single Go binary)
 └─ runner       node process supervision, restart, tree-kill
 ```
 
-### Why not embed the compiler (the current implementation)
+### Why not embed the compiler
 
-Today's code statically embeds `microsoft/typescript-go` by declaring fake modules named
+nestgo used to statically embed `microsoft/typescript-go`, declaring fake modules named
 `github.com/microsoft/typescript-go/shim/*` and reaching into the upstream `internal/`
 packages with `//go:linkname`. This is a real technique — typescript-eslint's `tsgolint`
-uses the identical pattern — but it is the wrong trade for nestgo:
+uses the identical pattern — but it was the wrong trade for nestgo:
 
 - **`go:linkname` has no type checking, and its failure mode is silent.** A linkname
   declaration whose signature no longer matches upstream compiles cleanly, passes
-  `go vet`, runs, and returns garbage. (Measured on Go 1.26.2.) In this repository it has
-  already broken twice on version bumps — both times as a runtime segfault while the full
-  unit-test suite passed.
+  `go vet`, runs, and returns garbage. (Measured on Go 1.26.2.) It broke twice on version
+  bumps here — both times as a runtime segfault while the full unit-test suite passed.
 - **No tooling can fix this from the consuming side.** Within our module the local
   declaration *is* the signature; there is no second source of truth to check against. A
   survey of every third-party linkname consumer in the Go ecosystem found zero projects
@@ -90,9 +88,12 @@ uses the identical pattern — but it is the wrong trade for nestgo:
   there is no CLI for that. nestgo needs compile, emit, and a list of what changed. All
   three are on the stable CLI surface.
 - **The CLI is faster than what we had.** The embedded engine had no incremental
-  compilation. `tsc --incremental` in watch mode re-emits only affected files: 96 ms for
-  a one-file edit in an 801-file synthetic project, versus 423 ms cold (see the note on
-  measurements below).
+  compilation at all. `tsc --incremental` re-emits only affected files, and in watch mode
+  the compiler keeps its program in memory between edits.
+
+The migration bore this out: both binaries went from ~19 MB to ~3 MB, and neither Go
+module now depends on anything beyond the standard library plus cobra, fsnotify and
+doublestar.
 
 Embedding remains the only route to *native* transformer support (`samchon/ttsc` obtains
 tsgo's builtin transformer chain via `//go:linkname internal/compiler.getScriptTransformers`).
@@ -126,7 +127,7 @@ of essentially every `tsc-alias` bug.
 
 | Alternative | Why not |
 | --- | --- |
-| **Embedded compiler via `go:linkname`** (current code) | Silent-failure ABI, unfixable from our side, announced deprecation intent, and unnecessary for our use case. See above. |
+| **Embedded compiler via `go:linkname`** (what nestgo used to do) | Silent-failure ABI, unfixable from our side, announced deprecation intent, and unnecessary for our use case. See above. |
 | **`tsc --api` JSON-RPC mode** | Undocumented; self-describes as *"The protocol is unversioned; both sides must be built from the same tree"*; **has no emit method**; being redesigned for 7.1. Same ABI coupling as linkname, different wire format. |
 | **`typescript/unstable/*` JS API** | Every entry point is namespaced `unstable/`; 7.0 has no emit at all. Would also force a Node process into every build. Revisit if 7.1's API stabilizes. |
 | **Shell out to `tsc-alias`** | Measured defects: it rewrites alias-looking text **inside string literals and comments** (silent data corruption), and never updates `.js.map` mappings. It also re-scans every output file on every run (118 ms vs. a 48 ms warm rebuild). |
@@ -155,8 +156,8 @@ that `typescript@7`'s launcher resolves at runtime. Resolution order:
 2. The user's `typescript` package: resolve `typescript/package.json`, then import its
    `lib/getExePath.js` **by absolute path** and call it. This is the same function the
    official `tsc` launcher uses.
-3. Optionally, a nestgo-managed download of the platform package (the model Deno uses),
-   so nestgo works without `typescript` in `node_modules`.
+3. Not implemented: a nestgo-managed download of the platform package (the model Deno
+   uses), which would let nestgo work without `typescript` in `node_modules`.
 
 Two rules learned the hard way, both measured:
 
@@ -196,9 +197,25 @@ the cycle sentinels, collect `TSFILE:` lines, rewrite only those files, then res
 child process. No tool currently wraps `tsgo --watch`; measurements confirm it works,
 is genuinely incremental, and produces parseable per-cycle output.
 
-Two gaps in `tsc --watch` that nestgo must cover: stale outputs are never cleaned when a
-source file is deleted, and a `.tsbuildinfo` written by a different compiler version
-forces a silent full rebuild (so it must be invalidated when the toolchain changes).
+nestgo skips restarting the application for cycles that emit nothing. The compiler
+re-checks whenever it notices a change, including ones needing no new output — a touch
+with identical content, for instance — and restarting on those would bounce the app for
+no reason.
+
+A failed rebuild leaves the running process alone: it is still serving the last good
+build, which beats taking the app down over a typo.
+
+Two gaps nestgo has to cover: stale outputs are never cleaned when a source file is
+deleted, and incremental state can outlive the output it describes (see below).
+
+**Incremental state must be invalidated when the output goes.** `.tsbuildinfo` is trusted
+over the filesystem, so after a manual `rm -rf dist` the compiler concludes every file is
+current and emits nothing, exiting 0 having produced no build. That is tsc's own
+behaviour and `nest build` inherits it, but a build command that silently does nothing is
+the worst possible failure, so nestgo clears the state when the output directory has
+gone. This also means deriving the default buildinfo path — it sits beside the tsconfig,
+named after it — since `deleteOutDir` otherwise only knows about an explicitly configured
+one.
 
 ### rewrite — path aliases
 
@@ -306,27 +323,47 @@ TypeScript 6.
 
 ## 7. Roadmap
 
-**Phase 1 — this document, plus interim guards.** Until Phase 2 lands, the embedded
-compiler stays in place with: an end-to-end CI job that compiles and *runs* a real project
-(the only check that catches linkname drift — unit tests do not), a rule that the
-typescript-go dependency is pinned to release tags only, and a warning comment on every
-`go:linkname` declaration.
+**Done.** The compiler locator, subprocess spawn/parse layer, `--showConfig` config
+resolution, TypeScript 7 preflight, rewriter hardening (source maps, node_modules
+precedence, `TSFILE`-driven incremental passes), compiler-driven watch mode, and removal
+of the embedded engine and shim tree.
 
-**Phase 2 — migration to subprocess.** Toolchain locator; spawn/parse layer; rewriter
-hardening (source maps, node_modules precedence, `TSFILE`-driven incremental passes);
-`--showConfig` replacing the tsconfig parser; preflight migrations; deletion of the shim
-tree and the embedded engine; CI fixtures for both a plain project and the stock NestJS
-template.
+**Next — plugin metadata sidecar.** As described in §6: the only route to
+`@nestjs/swagger` and `@nestjs/graphql` support, and the largest remaining gap against
+`nest build`.
 
-**Phase 3 — plugin metadata sidecar.** As described in §6.
+**Next — a NestJS fixture in CI.** The end-to-end tests cover a plain TypeScript project
+and a decorator fixture. Neither is a real NestJS application, so nothing yet exercises
+module resolution across a realistic dependency graph.
 
 **Ongoing — NestJS 12 readiness.** v12 moves the ecosystem toward ESM, which makes
-extension-correct rewriting mandatory rather than optional. A scheduled CI job tracks
-`typescript@next` so TypeScript 7.1 changes surface before they reach users.
+extension-correct rewriting mandatory rather than optional. A scheduled CI job should
+track `typescript@next` so TypeScript 7.1 changes surface before they reach users.
+
+**Known limitations.**
+
+- The specifier scanner does not recognise regex literals. A regex containing an
+  unbalanced quote opens a phantom string region, and imports after it on that file are
+  left unrewritten. Fixing it properly needs a real JavaScript tokenizer.
+- Emitted CommonJS uses `require("./service.js")` where `nest build` emits
+  `require("./service")`. Both resolve identically; the explicit form is what ESM
+  requires.
 
 ## 8. Verification
 
 The load-bearing test is end-to-end: build both binaries, compile a real project, and
-**run the output**. This session demonstrated why — the entire unit-test suite passed
-while both binaries segfaulted on any real input. Unit tests cover the rewriter, config
-resolution, and process lifecycle; they do not and cannot cover the compiler boundary.
+**run the output**. Unit tests cover the rewriter, the diagnostic parser, config
+resolution and process lifecycle; they cannot cover the compiler boundary. When the
+compiler was embedded, the entire unit suite passed twice while the binaries segfaulted
+on any real input.
+
+Three checks run in CI on every push:
+
+| Check | What it would catch |
+| --- | --- |
+| `tests/dummy-ts` compiled by both binaries, then executed | a broken pipeline, or alias rewriting that produces unresolvable imports |
+| `scripts/verify-decorator-emit.sh` | decorator metadata drifting from `tsc`, which would break NestJS dependency injection at runtime rather than at build time |
+| `go test ./...` in both modules | everything below the compiler boundary |
+
+Integration tests install a real `typescript@7` and run the actual compiler; they skip
+rather than fail when offline.

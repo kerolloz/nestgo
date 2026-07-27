@@ -1,8 +1,8 @@
 # ttsgo & nestgo
 
-**nestgo** is a drop-in replacement for `nest build` and `nest start`, powered by **ttsgo** — a TypeScript compiler built on top of TypeScript 7.0's native Go port.
+**nestgo** is a drop-in replacement for `nest build` and `nest start` that compiles with **TypeScript 7**, the native Go compiler.
 
-No config changes required. Same `nest-cli.json`. Same `tsconfig.json`. Just faster.
+Same `nest-cli.json`. Same `tsconfig.json`. It runs the TypeScript your project already has installed, so you type-check against the exact compiler version you pinned.
 
 Why this exists, and where it's going: [ARCHITECTURE.md](./ARCHITECTURE.md). The short version is that the Nest CLI drives TypeScript through its JavaScript compiler API and injects custom transformers at emit; TypeScript 7 is a Go binary with neither, so the Nest CLI does not work on TypeScript 7 today and its design does not port there.
 
@@ -10,16 +10,18 @@ Why this exists, and where it's going: [ARCHITECTURE.md](./ARCHITECTURE.md). The
 
 ## Benchmarks
 
-Benchmarks were run on dummy projects. Real-world speedups depend on project size, but typically land between **5x and 30x**.
+Measured on `tests/decorators` (a small decorator-heavy fixture, macOS arm64), cold build,
+best of three:
 
-| Project      | Tool           | Time    | Speedup     |
-|--------------|----------------|---------|-------------|
-| TypeScript   | `tsc`          | 0.643s  | baseline    |
-| TypeScript   | `ttsgo`        | 0.130s  | **~5x**     |
-| NestJS app   | `nest build`   | 1.856s  | baseline    |
-| NestJS app   | `nestgo build` | 0.060s  | **~30x**    |
+| Tool | Time |
+|------|------|
+| `tsc` 5.9.3 — the version `@nestjs/cli` pins | 0.34s |
+| `ttsgo` | 0.05s |
 
----
+That is ~7x on a fixture this small, where Node's startup dominates `tsc`'s number. The
+gap widens with project size, and watch rebuilds are cheaper again because the compiler
+stays resident and re-emits only what changed. Measure your own project before quoting a
+number — the speedup depends heavily on how much of your build is type-checking.
 
 ## nestgo
 
@@ -27,11 +29,13 @@ A CLI replacement for the NestJS build toolchain. Reads your existing `nest-cli.
 
 ### Installation
 
-Install as a dev dependency and update your npm scripts:
+nestgo needs TypeScript 7 in your project — it drives your compiler rather than bundling one:
 
 ```bash
-npm install --save-dev nestgo
+npm install --save-dev nestgo typescript@^7
 ```
+
+Then update your npm scripts:
 
 ```json
 // package.json
@@ -111,8 +115,8 @@ This works for both `import ... from` and `require(...)` syntax, including `.d.t
 
 | Variable            | Description                                           |
 |---------------------|-------------------------------------------------------|
-| `NESTGO_DEBOUNCE_MS`| File watcher debounce in milliseconds (default: 500)  |
-| `TTSGO_WORKERS`     | Number of I/O workers for parallel file emit          |
+| `NESTGO_TSC_BIN`    | Path to the TypeScript compiler to run, bypassing discovery |
+| `TTSGO_WORKERS`     | Number of workers used to rewrite emitted files       |
 | `NESTGO_BINARY`     | Override the `nestgo` binary the npm launcher runs    |
 | `TTSGO_BINARY`      | Override the `ttsgo` binary the npm launcher runs     |
 
@@ -125,7 +129,7 @@ A standalone TypeScript compiler for non-NestJS projects. A faster drop-in for `
 ### Installation
 
 ```bash
-npm install --save-dev ttsgo
+npm install --save-dev ttsgo typescript@^7
 ```
 
 ### Usage
@@ -137,7 +141,11 @@ ttsgo -p tsconfig.json --outDir dist
 ttsgo --version                  # print version
 ```
 
-`ttsgo` reads your `tsconfig.json`, runs type-checking and emit using TypeScript 7.0's native Go compiler, and rewrites any `paths` aliases in the emitted files in one pass — no separate post-processing step.
+`ttsgo` runs your project's TypeScript 7 compiler and then rewrites `paths` aliases in the
+emitted files, so the output runs under Node without `tsconfig-paths` at runtime. Unlike
+`tsc-alias`, it only rewrites genuine import positions — never alias-looking text inside
+string literals — and it updates the companion source maps so debuggers and stack traces
+stay accurate on import lines.
 
 ---
 
@@ -146,32 +154,42 @@ ttsgo --version                  # print version
 ```
 nestgo build
      │
-     ├── reads nest-cli.json + tsconfig.json
+     ├── reads nest-cli.json
      │
-     └── calls ttsgo engine (in-process, no child process)
-              │
-              ├── TypeScript 7.0 Go compiler (microsoft/typescript-go)
-              │     type-check + emit
-              │
-              ├── concurrent I/O worker pool
-              │     parallel WriteFile across CPU cores
-              │
-              └── paths rewriter
-                    rewrites @aliases → relative paths
-                    in-memory, during emit
+     ├── locates your TypeScript 7 compiler
+     │     node_modules/@typescript/typescript-<os>-<arch>
+     │
+     ├── asks it for the resolved tsconfig  (tsc --showConfig)
+     │     extends chains flattened, include globs expanded
+     │
+     ├── runs it                            (tsc --listEmittedFiles)
+     │     type-check + emit
+     │
+     ├── rewrites path aliases
+     │     @aliases → relative paths, in the files that changed
+     │     source maps adjusted to match
+     │
+     └── copies assets
 ```
 
-The compiler runs in the same process as nestgo — there's no `exec.Command` spawned for compilation. The only child process is the Node.js app itself (`nestgo start`).
+`nestgo start --watch` runs the compiler in watch mode and restarts your app after each
+clean build. The compiler does the file watching: it knows your project's real file set
+and recompiles incrementally, so a rebuild touches only what changed. A failing rebuild
+leaves the running app alone rather than taking it down over a typo.
 
-Path alias rewriting happens as each file buffer is handed off to disk, so there's no second pass over the output directory.
-
-> This in-process design is being replaced: nestgo will locate and drive the official TypeScript 7 binary as a subprocess instead of embedding the compiler. The reasoning, the evidence, and the migration plan are in [ARCHITECTURE.md](./ARCHITECTURE.md).
-
----
+For the reasoning behind this design, and what it replaced, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Local development
 
 Requires [just](https://github.com/casey/just), [Go 1.26+](https://github.com/kerolloz/go-installer) and Node.js 20+.
+
+The test fixtures install their own TypeScript, which is how a real project works:
+
+```bash
+npm install --prefix tests/dummy-ts
+npm install --prefix tests/decorators
+```
 
 ```bash
 git clone https://github.com/kerolloz/nestgo.git
@@ -200,19 +218,19 @@ cd tests/dummy-ts
 node dist/main.js       # should print: App running. 2 + 3 = 5
 ```
 
-That last step is the check that matters, and CI runs it on every push. The
-compiler is reached through `go:linkname` into typescript-go's internals, which
-Go does not type-check — an upstream signature change compiles cleanly, passes
-every unit test, and then fails at runtime. Only running the output catches it.
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for why that boundary exists and how
-it is being removed.
+That last step is the check that matters, and CI runs it on every push. Unit tests cannot
+cover the compiler boundary: nestgo drives a separate process, so the only way to know the
+pipeline works is to compile a real project and run what comes out.
 
 ### Tests
 
 ```bash
-cd packages/ttsgo && go test ./pkg/...
-cd packages/nestgo && go test ./...
+just test                 # both Go modules
+just verify-decorators    # decorator metadata still matches tsc
 ```
+
+Integration tests install a real TypeScript and run the actual compiler; they skip rather
+than fail when offline.
 
 ---
 
