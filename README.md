@@ -78,7 +78,7 @@ Only the `tsc` builder is supported. If your project uses `swc` or `webpack`, ne
 
 ### TypeScript 7 configuration requirements
 
-nestgo compiles with TypeScript 7, which removed several options that older NestJS templates still ship. If your `tsconfig.json` uses any of these, the compiler will reject it:
+nestgo compiles with TypeScript 7, which removed several options existing NestJS projects rely on. A freshly generated app only needs `baseUrl` removed; projects generated before NestJS moved to `nodenext` usually need more. If your `tsconfig.json` uses any of these, the compiler will reject it:
 
 | Removed | Replace with |
 |---------|--------------|

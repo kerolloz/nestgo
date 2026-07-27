@@ -198,7 +198,9 @@ func project(t *testing.T, files map[string]string) (bin, dir string) {
 		}
 	}
 
-	tsconfig := `{
+	// Only supply a default config when the caller did not bring its own.
+	if _, ok := files["tsconfig.json"]; !ok {
+		tsconfig := `{
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
@@ -208,8 +210,9 @@ func project(t *testing.T, files map[string]string) (bin, dir string) {
   },
   "include": ["src/**/*"]
 }`
-	if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(tsconfig), 0644); err != nil {
-		t.Fatal(err)
+		if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(tsconfig), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	tsc, err := toolchain.Locate(dir)

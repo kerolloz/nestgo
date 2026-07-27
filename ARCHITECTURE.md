@@ -233,12 +233,15 @@ validation). The **resolved tsconfig comes from `tsc --showConfig`** rather than
 hand-rolled parser, eliminating an entire class of divergence between what nestgo believes
 and what the compiler does.
 
-TypeScript 7 removed options that stock NestJS templates still use. Verified against the
-unmodified `@nestjs/schematics@11.1.0` template, which **does not compile**:
+TypeScript 7 removed options that existing NestJS projects rely on. The stock
+`@nestjs/schematics@11.1.0` template **does not compile** untouched — though it is closer
+than older projects, since it already uses `module`/`moduleResolution: "nodenext"`, and
+`baseUrl` is the only removed option it sets. Projects generated before that switch carry
+more of the list:
 
 | Removed / changed | Error | Migration |
 | --- | --- | --- |
-| `baseUrl` | TS5102 | `"paths": { "*": ["./*"] }` |
+| `baseUrl` | TS5102 | drop it; make `paths` targets relative |
 | implicit `rootDir` | TS5011 | set `rootDir` explicitly |
 | non-relative `paths` values | TS5090 | prefix with `./` |
 | `moduleResolution: node`/`node10`/`classic` | TS5108 | `bundler` or `nodenext` |
