@@ -22,6 +22,10 @@ test:
 verify-decorators:
 	./scripts/verify-decorator-emit.sh
 
+# Verify a real NestJS app builds, DI resolves, and plugin metadata generates
+verify-nest:
+	./scripts/verify-nest-app.sh
+
 # Clean build artifacts.
 # Only the release-staged binaries under packages/*/bin are removed — the
 # package bin/ directories also hold the committed launcher scripts, so they

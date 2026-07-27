@@ -54,13 +54,39 @@ func (a *Asset) ResolvedGlob() string {
 	return a.Include
 }
 
+// Plugin is a NestJS CLI plugin entry. The JSON form is either a bare package
+// name or an object with options.
+type Plugin struct {
+	Name    string         `json:"name"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
+func (p *Plugin) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		p.Name = name
+		return nil
+	}
+	type pluginObj struct {
+		Name    string         `json:"name"`
+		Options map[string]any `json:"options"`
+	}
+	var obj pluginObj
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	p.Name, p.Options = obj.Name, obj.Options
+	return nil
+}
+
 // CompilerOptions holds the subset of compilerOptions we care about.
 type CompilerOptions struct {
-	TsConfigPath string  `json:"tsConfigPath"`
-	DeleteOutDir bool    `json:"deleteOutDir"`
-	WatchAssets  bool    `json:"watchAssets"`
-	Assets       []Asset `json:"assets"`
-	BuilderType  string  // resolved to "tsc", "swc", or "webpack"
+	TsConfigPath string   `json:"tsConfigPath"`
+	DeleteOutDir bool     `json:"deleteOutDir"`
+	WatchAssets  bool     `json:"watchAssets"`
+	Assets       []Asset  `json:"assets"`
+	Plugins      []Plugin `json:"plugins"`
+	BuilderType  string   // resolved to "tsc", "swc", or "webpack"
 }
 
 type compilerOptionsRaw struct {
@@ -68,6 +94,7 @@ type compilerOptionsRaw struct {
 	DeleteOutDir *bool           `json:"deleteOutDir"`
 	WatchAssets  *bool           `json:"watchAssets"`
 	Assets       []Asset         `json:"assets"`
+	Plugins      []Plugin        `json:"plugins"`
 	Builder      json.RawMessage `json:"builder"`
 }
 
@@ -150,6 +177,7 @@ func Load(cwd, configPath string) (*NestConfig, error) {
 		cfg.CompilerOptions.WatchAssets = *raw.CompilerOptions.WatchAssets
 	}
 	cfg.CompilerOptions.Assets = raw.CompilerOptions.Assets
+	cfg.CompilerOptions.Plugins = raw.CompilerOptions.Plugins
 
 	// Resolve builder type.
 	if raw.CompilerOptions.Builder != nil {

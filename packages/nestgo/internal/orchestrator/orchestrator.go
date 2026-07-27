@@ -10,6 +10,7 @@ import (
 	"github.com/kerolloz/nestgo/internal/assets"
 	"github.com/kerolloz/nestgo/internal/config"
 	"github.com/kerolloz/nestgo/internal/logger"
+	"github.com/kerolloz/nestgo/internal/plugins"
 	"github.com/kerolloz/nestgo/internal/process"
 	"github.com/kerolloz/ttsgo/pkg/engine"
 	"github.com/kerolloz/ttsgo/pkg/toolchain"
@@ -153,6 +154,10 @@ func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 		}
 	}
 
+	if err := o.generatePluginMetadata(ctx); err != nil {
+		return err
+	}
+
 	logger.Info("Compiling with ttsgo...")
 	res, err := engine.CompileWithRewrite(ctx, engine.Options{
 		Cwd:          o.Cwd,
@@ -188,6 +193,39 @@ func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 		}
 	}
 
+	return nil
+}
+
+// generatePluginMetadata runs the CLI plugins' readonly visitors and writes
+// metadata.ts into the source root, before compilation, because the generated
+// file is itself an input to the build.
+func (o *Orchestrator) generatePluginMetadata(ctx context.Context) error {
+	configured := o.NestConfig.CompilerOptions.Plugins
+	if len(configured) == 0 {
+		return nil
+	}
+
+	list := make([]plugins.Plugin, 0, len(configured))
+	for _, p := range configured {
+		list = append(list, plugins.Plugin{Name: p.Name, Options: p.Options})
+	}
+
+	logger.Step("Generating plugin metadata...")
+	written, err := plugins.Generate(ctx, plugins.Options{
+		Cwd:          o.Cwd,
+		TsConfigPath: o.NestConfig.CompilerOptions.TsConfigPath,
+		OutputDir:    filepath.Join(o.Cwd, o.NestConfig.SourceRoot),
+		Plugins:      list,
+	})
+	if err != nil {
+		return err
+	}
+	if written != "" {
+		if rel, relErr := filepath.Rel(o.Cwd, written); relErr == nil {
+			written = rel
+		}
+		logger.Info("Wrote %s", written)
+	}
 	return nil
 }
 
@@ -239,6 +277,10 @@ func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 		if err := o.deleteOutDir(); err != nil {
 			return err
 		}
+	}
+
+	if err := o.generatePluginMetadata(ctx); err != nil {
+		return err
 	}
 
 	defer o.KillRunner()

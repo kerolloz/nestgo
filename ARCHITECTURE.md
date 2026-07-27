@@ -20,9 +20,10 @@ using the standard-mode `tsc` builder. It reads your existing `nest-cli.json` an
 
 - The `swc`, `webpack`, and (NestJS 12) `rspack` builders.
 - `nest generate` / `new` / `info` / `add` — nestgo is a build tool, not a scaffolder.
-- **CLI plugins** (`@nestjs/swagger`, `@nestjs/graphql`) — see §6. These cannot work
-  under TypeScript 7 in any tool, including the official Nest CLI. A compatible path
-  exists and is planned (Phase 3); it is not a small feature.
+
+**CLI plugins** (`@nestjs/swagger`, `@nestjs/graphql`) are supported, through a Node
+sidecar — see §6. They cannot work as transformers under TypeScript 7 in any tool,
+including the official Nest CLI.
 
 ## 2. Why nestgo exists
 
@@ -301,40 +302,54 @@ Two npm packages, each a thin Node launcher plus per-platform binary packages
 Under the target architecture these binaries no longer embed the compiler, so they shrink
 from ~19 MB to a small fraction of that.
 
-## 6. CLI plugins: the honest limitation
+## 6. CLI plugins
 
-`@nestjs/swagger` and `@nestjs/graphql` CLI plugins are TypeScript custom transformers.
-They cannot run under TypeScript 7 — not in nestgo, not in the Nest CLI, not in any tool.
-This is permanent for the TypeScript 7 line.
+`@nestjs/swagger` and `@nestjs/graphql` ship their CLI plugins as TypeScript custom
+transformers. TypeScript 7 has no transformer API and will not gain one — the compiler is
+a Go binary and cannot load JavaScript into its process — so those plugins cannot run as
+transformers under nestgo, under the Nest CLI, or under anything else on TypeScript 7.
 
-There is a supported path, and Nest already blessed it for its own SWC builder: plugins
-also expose a `ReadonlyVisitor` which walks the AST read-only and serializes results to a
-`metadata.ts` file that the application loads at runtime
-(`SwaggerModule.loadPluginMetadata`). The Nest CLI runs this in a **forked Node process**
-holding a real TypeScript `Program`.
+The plugins also expose a `ReadonlyVisitor`, which walks the AST without transforming it
+and serialises what it finds into a `metadata.ts` the application loads at runtime
+(`SwaggerModule.loadPluginMetadata`). NestJS documents that path for its own SWC builder,
+because SWC cannot run TypeScript transformers either. nestgo takes the same route.
 
-nestgo can do the same (Phase 3): fork a small Node sidecar with `@typescript/typescript6`
-and the Nest CLI's exported `PluginMetadataGenerator`, then compile the generated
-`metadata.ts` alongside the rest of the sources. Everything else — transpile, watch,
-assets, process supervision — stays in Go.
+A `ReadonlyVisitor` is handed a live `ts.Program` and returns `ts.Node` values, so it
+cannot be driven from Go. nestgo runs a short-lived **Node sidecar** before compiling,
+and the `metadata.ts` it writes is compiled as an ordinary source file.
 
-Until that ships, projects depending on CLI plugins should stay on the Nest CLI with
-TypeScript 6.
+Three details make this work, none of them obvious:
+
+- **The visitors need the classic compiler API**, which TypeScript 7 does not have. A
+  project using CLI plugins therefore needs `@typescript/typescript6` installed alongside
+  TypeScript 7. It is used only for metadata; the code still compiles with 7.
+- **The plugins `require("typescript")` themselves** and call the classic API on whatever
+  comes back — which in a nestgo project is TypeScript 7, where the visitor dies on its
+  first `ts.visitNode`. The sidecar redirects that specifier to the TypeScript 6 module
+  for its own process.
+- **The generated file uses extensionless dynamic imports**, which `node16`/`nodenext`
+  reject — and those are the only resolutions TypeScript 7 still has. The sidecar adds
+  the extensions, without which no plugin-using project could compile at all.
+
+Configure plugins as usual in `nest-cli.json`:
+
+```json
+{ "compilerOptions": { "plugins": ["@nestjs/swagger"] } }
+```
+
+`tests/nest-app` covers this end to end: a DTO with no `@ApiProperty` decorators whose
+swagger schema is nonetheless complete, proving the metadata came from the plugin.
 
 ## 7. Roadmap
 
 **Done.** The compiler locator, subprocess spawn/parse layer, `--showConfig` config
 resolution, TypeScript 7 preflight, rewriter hardening (source maps, node_modules
-precedence, `TSFILE`-driven incremental passes), compiler-driven watch mode, and removal
-of the embedded engine and shim tree.
+precedence, `TSFILE`-driven incremental passes), compiler-driven watch mode, removal of
+the embedded engine and shim tree, the CLI plugin sidecar, and a real NestJS application
+fixture in CI.
 
-**Next — plugin metadata sidecar.** As described in §6: the only route to
-`@nestjs/swagger` and `@nestjs/graphql` support, and the largest remaining gap against
-`nest build`.
-
-**Next — a NestJS fixture in CI.** The end-to-end tests cover a plain TypeScript project
-and a decorator fixture. Neither is a real NestJS application, so nothing yet exercises
-module resolution across a realistic dependency graph.
+**Next — `nest build --webpack` and monorepo mode.** Still out of scope, and the largest
+remaining gap against the Nest CLI for projects that use them.
 
 **Ongoing — NestJS 12 readiness.** v12 moves the ecosystem toward ESM, which makes
 extension-correct rewriting mandatory rather than optional. A scheduled CI job should
@@ -363,6 +378,7 @@ Three checks run in CI on every push:
 | --- | --- |
 | `tests/dummy-ts` compiled by both binaries, then executed | a broken pipeline, or alias rewriting that produces unresolvable imports |
 | `scripts/verify-decorator-emit.sh` | decorator metadata drifting from `tsc`, which would break NestJS dependency injection at runtime rather than at build time |
+| `scripts/verify-nest-app.sh` | a real NestJS app failing to build, dependency injection not resolving, or plugin metadata not being generated |
 | `go test ./...` in both modules | everything below the compiler boundary |
 
 Integration tests install a real `typescript@7` and run the actual compiler; they skip

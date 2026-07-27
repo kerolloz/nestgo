@@ -51,6 +51,7 @@ jobs:
         run: |
           npm install --prefix tests/dummy-ts --no-audit --no-fund
           npm install --prefix tests/decorators --no-audit --no-fund
+          npm install --prefix tests/nest-app --no-audit --no-fund
 
       - name: E2E — ttsgo compiles and the output runs
         working-directory: tests/dummy-ts
@@ -74,6 +75,11 @@ jobs:
       # emit drifts from tsc's, DI breaks in the user's app, not here.
       - name: Verify decorator metadata matches tsc
         run: ./scripts/verify-decorator-emit.sh
+
+      # The only fixture with real dependencies, decorators resolved through
+      # @nestjs/common, and a CLI plugin.
+      - name: E2E — NestJS app builds, DI resolves, plugins generate metadata
+        run: ./scripts/verify-nest-app.sh
 
   # ── Build: parallel native compilation on 3 OS runners ────
   build:

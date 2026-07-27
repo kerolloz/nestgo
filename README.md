@@ -72,13 +72,36 @@ All commands auto-detect `nest-cli.json` and `tsconfig.json` in the current dire
 | `compilerOptions.deleteOutDir`    | ✅        |
 | `compilerOptions.assets`          | ✅        |
 | `compilerOptions.watchAssets`     | ✅        |
+| `compilerOptions.plugins`         | ✅        |
 | `compilerOptions.builder: "swc"`  | ❌        |
 | `compilerOptions.builder: "webpack"` | ❌     |
-| plugins, generate, add, new       | ❌        |
+| generate, add, new                | ❌        |
 
 Only the `tsc` builder is supported. If your project uses `swc` or `webpack`, nestgo will exit with a clear error rather than silently producing wrong output.
 
-> **CLI plugins** (`@nestjs/swagger`, `@nestjs/graphql`) are TypeScript custom transformers. TypeScript 7 has no transformer API, so they cannot run under nestgo — nor under the Nest CLI itself on TypeScript 7. This is a property of the compiler, not a missing feature. See [ARCHITECTURE.md](./ARCHITECTURE.md#6-cli-plugins-the-honest-limitation) for the supported path forward.
+### CLI plugins
+
+`@nestjs/swagger` and `@nestjs/graphql` CLI plugins work. Configure them as usual:
+
+```json
+// nest-cli.json
+{ "compilerOptions": { "plugins": ["@nestjs/swagger"] } }
+```
+
+These plugins are TypeScript custom transformers, and TypeScript 7 has no transformer API — they cannot run as transformers under nestgo, the Nest CLI, or anything else. nestgo instead runs their `ReadonlyVisitor` in a short-lived Node sidecar before compiling, generating the `metadata.ts` your app loads at runtime. This is the same approach NestJS documents for its SWC builder.
+
+That sidecar needs the classic compiler API, so install TypeScript 6 alongside 7:
+
+```bash
+npm install --save-dev @typescript/typescript6
+```
+
+It is used only to generate metadata; your code still compiles with TypeScript 7. Then load the metadata as usual:
+
+```ts
+import metadata from './metadata.js';
+await SwaggerModule.loadPluginMetadata(metadata);
+```
 
 ### TypeScript 7 configuration requirements
 
