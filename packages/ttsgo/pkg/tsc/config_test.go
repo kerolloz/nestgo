@@ -168,3 +168,27 @@ func TestResolveConfigPath(t *testing.T) {
 		}
 	})
 }
+
+// Without an explicit tsBuildInfoFile the compiler still writes one, beside
+// the tsconfig and named after it. deleteOutDir has to remove that file too:
+// wiping the output directory while leaving the buildinfo makes the compiler
+// believe everything is current, and the next build emits nothing at all.
+func TestLoadConfigDefaultsBuildInfoPath(t *testing.T) {
+	bin, dir := project(t, map[string]string{
+		"src/main.ts": "export const g: string = 'hi';\n",
+		"tsconfig.build.json": `{
+  "compilerOptions": {"target":"ES2022","module":"CommonJS","outDir":"./dist","rootDir":"./src"},
+  "include": ["src/**/*"]
+}`,
+	})
+
+	cfg, err := LoadConfig(context.Background(), Options{Bin: bin, Cwd: dir, Project: "tsconfig.build.json"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	want := filepath.Join(dir, "tsconfig.build.tsbuildinfo")
+	if cfg.TsBuildInfoFile != want {
+		t.Errorf("TsBuildInfoFile = %q, want %q", cfg.TsBuildInfoFile, want)
+	}
+}

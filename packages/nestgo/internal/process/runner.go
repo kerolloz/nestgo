@@ -161,11 +161,25 @@ func (r *Runner) build() (*exec.Cmd, error) {
 }
 
 func (r *Runner) resolveOutputFile() string {
+	// OutDir and RootDir may be absolute (the compiler reports them that way),
+	// in which case joining them onto Cwd would produce a path that does not
+	// exist.
+	outDir := r.opts.OutDir
+	if !filepath.IsAbs(outDir) {
+		outDir = filepath.Join(r.opts.Cwd, outDir)
+	}
+	rootDir := r.opts.RootDir
+	if filepath.IsAbs(rootDir) {
+		if rel, err := filepath.Rel(r.opts.Cwd, rootDir); err == nil {
+			rootDir = rel
+		}
+	}
+
 	seen := map[string]bool{}
 	candidates := []string{
-		filepath.Join(r.opts.Cwd, r.opts.OutDir, r.opts.SourceRoot, r.opts.EntryFile+".js"),
-		filepath.Join(r.opts.Cwd, r.opts.OutDir, r.opts.RootDir, r.opts.EntryFile+".js"),
-		filepath.Join(r.opts.Cwd, r.opts.OutDir, r.opts.EntryFile+".js"),
+		filepath.Join(outDir, r.opts.SourceRoot, r.opts.EntryFile+".js"),
+		filepath.Join(outDir, rootDir, r.opts.EntryFile+".js"),
+		filepath.Join(outDir, r.opts.EntryFile+".js"),
 	}
 
 	var found []string

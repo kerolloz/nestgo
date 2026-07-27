@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config is a tsconfig as the compiler resolved it: `extends` chains flattened,
@@ -35,7 +36,11 @@ type Config struct {
 	// could be relative to.
 	Paths map[string][]string
 
-	// TsBuildInfoFile is absolute, or empty when unset.
+	// TsBuildInfoFile is absolute. When the config does not set it, this is
+	// where incremental builds put it by default: alongside the tsconfig,
+	// named after it. Deleting the output directory without also removing this
+	// leaves the compiler believing everything is up to date, and the next
+	// build emits nothing at all.
 	TsBuildInfoFile string
 
 	EmitDecoratorMetadata  bool
@@ -103,7 +108,7 @@ func buildConfig(configPath string, out showConfigOutput) *Config {
 		Options:                out.CompilerOptions,
 		Paths:                  stringSliceMap(out.CompilerOptions["paths"]),
 		RootDir:                resolve(stringOption(out.CompilerOptions, "rootDir")),
-		TsBuildInfoFile:        resolve(stringOption(out.CompilerOptions, "tsBuildInfoFile")),
+		TsBuildInfoFile:        resolve(buildInfoPath(configPath, out.CompilerOptions)),
 		EmitDecoratorMetadata:  boolOption(out.CompilerOptions, "emitDecoratorMetadata"),
 		ExperimentalDecorators: boolOption(out.CompilerOptions, "experimentalDecorators"),
 	}
@@ -151,6 +156,17 @@ func resolveConfigPath(cwd, project string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// buildInfoPath returns the configured tsBuildInfoFile, or the path the
+// compiler uses by default: the tsconfig's own name with a .tsbuildinfo
+// extension, beside the tsconfig.
+func buildInfoPath(configPath string, options map[string]any) string {
+	if configured := stringOption(options, "tsBuildInfoFile"); configured != "" {
+		return configured
+	}
+	base := filepath.Base(configPath)
+	return strings.TrimSuffix(base, filepath.Ext(base)) + ".tsbuildinfo"
 }
 
 func firstDiagnostic(res *Result) string {

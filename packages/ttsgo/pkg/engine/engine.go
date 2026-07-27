@@ -1,3 +1,9 @@
+// Package engine compiles a TypeScript project and resolves tsconfig path
+// aliases in the output.
+//
+// It drives the project's own TypeScript 7 compiler as a subprocess rather than
+// embedding one, so the code that type-checks a user's project is the exact
+// compiler they installed. See ARCHITECTURE.md.
 package engine
 
 import (
@@ -11,9 +17,8 @@ import (
 	"sync"
 
 	"github.com/kerolloz/ttsgo/pkg/paths"
-	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
-	shimcore "github.com/microsoft/typescript-go/shim/core"
-	shimtsoptions "github.com/microsoft/typescript-go/shim/tsoptions"
+	"github.com/kerolloz/ttsgo/pkg/toolchain"
+	"github.com/kerolloz/ttsgo/pkg/tsc"
 )
 
 // Options defines the parameters for a compilation run.
@@ -22,215 +27,306 @@ type Options struct {
 	TsConfigPath string
 	OutDir       string
 	Emit         bool
+
+	// Bin is the compiler to run. Located from the project when empty.
+	Bin string
+
+	// Incremental reuses .tsbuildinfo, which is what makes rebuilds cheap.
+	Incremental bool
 }
 
 // Result carries the outcome of a compilation.
 type Result struct {
 	EmittedFiles []string
 	Diagnostics  []string
+
+	// Config is the tsconfig as the compiler resolved it.
+	Config *tsc.Config
+
+	// Problems are TypeScript 7 migration issues found in the config.
+	Problems []tsc.Problem
+
+	// First reports whether this was the initial compilation of a watch run.
+	First bool
 }
 
-// LoadProgram parses the tsconfig and initializes a TSGo program.
-func LoadProgram(ctx context.Context, cwd, tsconfigPath string) (*Program, error) {
-	fs := DefaultFS()
-	host := DefaultHost(cwd, fs)
-
-	resolvedTsConfig := tsconfigPath
-	if !filepath.IsAbs(resolvedTsConfig) {
-		resolvedTsConfig = filepath.Join(cwd, resolvedTsConfig)
-	}
-
-	parsed, diags := shimtsoptions.GetParsedCommandLineOfConfigFile(resolvedTsConfig, &shimcore.CompilerOptions{}, nil, host, nil)
-	if len(diags) > 0 {
-		var msgs []string
-		for _, d := range diags {
-			msgs = append(msgs, d.String())
-		}
-		return nil, fmt.Errorf("failed to parse tsconfig: %s", strings.Join(msgs, "; "))
-	}
-
-	tsProgram := shimcompiler.NewProgram(shimcompiler.ProgramOptions{
-		Config: parsed,
-		Host:   host,
-	})
-
-	return &Program{
-		TSProgram:    tsProgram,
-		ParsedConfig: parsed,
-		Host:         host,
-	}, nil
-}
-
-// CompileWithRewrite is the high-level API for ttsgo.
+// CompileWithRewrite compiles the project and rewrites path aliases in the
+// emitted output.
 func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
-	prog, err := LoadProgram(ctx, opts.Cwd, opts.TsConfigPath)
+	bin := opts.Bin
+	if bin == "" {
+		located, err := toolchain.Locate(opts.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		bin = located.Path
+	}
+
+	runOpts := tsc.Options{
+		Bin:         bin,
+		Cwd:         opts.Cwd,
+		Project:     opts.TsConfigPath,
+		OutDir:      opts.OutDir,
+		NoEmit:      !opts.Emit,
+		Incremental: opts.Incremental,
+	}
+
+	cfg, err := tsc.LoadConfig(ctx, runOpts)
 	if err != nil {
 		return nil, err
 	}
-	defer prog.Close()
 
-	diags := prog.Diagnostics(ctx)
-	if len(diags) > 0 {
-		var diagMsgs []string
-		for _, d := range diags {
-			diagMsgs = append(diagMsgs, d.String())
-		}
-		return &Result{Diagnostics: diagMsgs}, nil
+	result := &Result{Config: cfg, Problems: tsc.Preflight(cfg)}
+
+	if opts.Emit && opts.Incremental {
+		invalidateStaleBuildInfo(cfg, opts)
 	}
 
+	res, err := tsc.Run(ctx, runOpts)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range res.Diagnostics {
+		result.Diagnostics = append(result.Diagnostics, d.String())
+	}
+	if tsc.HasErrors(res.Diagnostics) {
+		return result, nil
+	}
+
+	result.EmittedFiles = res.EmittedFiles
 	if !opts.Emit {
-		return &Result{}, nil
+		return result, nil
 	}
 
-	// Setup rewriter
+	if err := rewriteEmitted(cfg, opts, res.EmittedFiles); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Watch compiles continuously, calling onBuild after each compilation settles.
+//
+// The compiler owns file watching: it knows the project's real file set and
+// recompiles incrementally, so a rebuild costs a fraction of a cold build and
+// only the files that actually changed get rewritten.
+func Watch(ctx context.Context, opts Options, onBuild func(*Result) error) error {
+	bin := opts.Bin
+	if bin == "" {
+		located, err := toolchain.Locate(opts.Cwd)
+		if err != nil {
+			return err
+		}
+		bin = located.Path
+	}
+
+	runOpts := tsc.Options{
+		Bin:         bin,
+		Cwd:         opts.Cwd,
+		Project:     opts.TsConfigPath,
+		OutDir:      opts.OutDir,
+		Incremental: true,
+	}
+
+	cfg, err := tsc.LoadConfig(ctx, runOpts)
+	if err != nil {
+		return err
+	}
+
+	return tsc.Watch(ctx, runOpts, nil, func(cycle tsc.Cycle) error {
+		result := &Result{
+			Config:       cfg,
+			EmittedFiles: cycle.EmittedFiles,
+			Problems:     tsc.Preflight(cfg),
+			First:        cycle.First,
+		}
+		for _, d := range cycle.Diagnostics {
+			result.Diagnostics = append(result.Diagnostics, d.String())
+		}
+
+		if !cycle.Failed() && len(cycle.EmittedFiles) > 0 {
+			if err := rewriteEmitted(cfg, opts, cycle.EmittedFiles); err != nil {
+				return err
+			}
+		}
+		return onBuild(result)
+	})
+}
+
+// invalidateStaleBuildInfo drops the incremental state when the output it
+// describes is gone.
+//
+// Incremental compilation trusts .tsbuildinfo over the filesystem, so after a
+// manual `rm -rf dist` the compiler concludes every file is current and emits
+// nothing — exiting 0 having produced no build at all. That is tsc's own
+// behaviour, and nest build inherits it, but a build command that silently
+// does nothing is the worst possible failure, so we clear the state instead.
+func invalidateStaleBuildInfo(cfg *tsc.Config, opts Options) {
+	if cfg.TsBuildInfoFile == "" {
+		return
+	}
+	if _, err := os.Stat(cfg.TsBuildInfoFile); err != nil {
+		return // no incremental state to invalidate
+	}
+
 	outDir := opts.OutDir
 	if outDir == "" {
-		if prog.ParsedConfig.CompilerOptions().OutDir != "" {
-			outDir = prog.ParsedConfig.CompilerOptions().OutDir
-		} else {
-			outDir = opts.Cwd
-		}
-	}
-	if !filepath.IsAbs(outDir) {
+		outDir = cfg.OutDir
+	} else if !filepath.IsAbs(outDir) {
 		outDir = filepath.Join(opts.Cwd, outDir)
 	}
 
-	// Path mapping extraction
-	pathMap := make(map[string][]string)
-	if prog.ParsedConfig.CompilerOptions().Paths != nil {
-		p := prog.ParsedConfig.CompilerOptions().Paths
-		for key := range p.Keys() {
-			if val, ok := p.Get(key); ok {
-				pathMap[key] = val
-			}
-		}
+	// Sources emit next to themselves when there is no outDir; there is no
+	// single directory whose absence proves the output is missing.
+	if outDir == cfg.Dir {
+		return
 	}
 
-	// Root dir extraction
-	rootDir := ""
-	if prog.ParsedConfig.CompilerOptions().RootDir != "" {
-		rootDir = prog.ParsedConfig.CompilerOptions().RootDir
+	if _, err := os.Stat(outDir); os.IsNotExist(err) {
+		_ = os.Remove(cfg.TsBuildInfoFile)
+	}
+}
+
+// rewriteEmitted resolves path aliases in the files the compiler just wrote.
+//
+// TypeScript does not rewrite `paths` aliases on emit — the mapping is
+// descriptive, telling the checker where to look, not prescriptive. Emitted
+// JavaScript therefore still contains `require("@app/thing")`, which Node
+// cannot resolve. Only the files the compiler reported are touched, so a
+// watch rebuild costs one pass over the handful that changed rather than the
+// whole output tree.
+func rewriteEmitted(cfg *tsc.Config, opts Options, emitted []string) error {
+	outDir := opts.OutDir
+	if outDir == "" {
+		outDir = cfg.OutDir
 	}
 
-	// GetPathsBasePath returns baseUrl when set, otherwise the directory of the
-	// tsconfig that declared `paths` (not necessarily Cwd), and "" when the
-	// project has no paths at all.
 	rewriter := paths.New(paths.Options{
-		Cwd:       opts.Cwd,
-		Paths:     pathMap,
-		OutDir:    outDir,
-		RootDir:   rootDir,
-		PathsBase: prog.ParsedConfig.CompilerOptions().GetPathsBasePath(opts.Cwd),
+		Cwd:     opts.Cwd,
+		Paths:   cfg.Paths,
+		OutDir:  outDir,
+		RootDir: cfg.RootDir,
+		// TypeScript 7 removed baseUrl, so `paths` targets can only be
+		// relative to the tsconfig that declared them.
+		PathsBase: cfg.Dir,
 	})
 
-	// --- Concurrent I/O pipeline ---
-	// The compiler calls WriteFile synchronously per source file, but I/O
-	// is the bottleneck (MkdirAll + WriteFile syscalls for every emitted
-	// file). We decouple the callback from disk writes using a bounded
-	// worker pool.
-
-	type writeJob struct {
-		fileName string
-		data     []byte
+	targets := make([]string, 0, len(emitted))
+	for _, file := range emitted {
+		if strings.HasSuffix(file, ".js") || strings.HasSuffix(file, ".d.ts") ||
+			strings.HasSuffix(file, ".mjs") || strings.HasSuffix(file, ".cjs") {
+			targets = append(targets, file)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
 	}
 
 	var (
-		mu         sync.Mutex
-		emitted    []string
-		dirOnceMap sync.Map // map[string]*sync.Once
-		wg         sync.WaitGroup
-		writeErr   error
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
 	)
 
-	// Bounded channel — adaptive worker count based on available CPUs
-	numWorkers := runtime.NumCPU() * 4
-	if numWorkers < 8 {
-		numWorkers = 8
+	jobs := make(chan string, len(targets))
+	for _, file := range targets {
+		jobs <- file
 	}
-	if numWorkers > 128 {
-		numWorkers = 128
-	}
-	if v := os.Getenv("TTSGO_WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			numWorkers = n
-		}
-	}
-	bufSize := numWorkers * 4
-	jobs := make(chan writeJob, bufSize)
+	close(jobs)
 
-	for i := 0; i < numWorkers; i++ {
+	for range workerCount(len(targets)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := range jobs {
-				dir := filepath.Dir(j.fileName)
-
-				// Get or create a Once for this directory
-				actual, _ := dirOnceMap.LoadOrStore(dir, &sync.Once{})
-				once := actual.(*sync.Once)
-
-				var mkdirErr error
-				once.Do(func() {
-					mkdirErr = os.MkdirAll(dir, 0755)
-				})
-
-				if mkdirErr != nil {
+			for file := range jobs {
+				if err := rewriteFile(rewriter, file); err != nil {
 					mu.Lock()
-					if writeErr == nil {
-						writeErr = mkdirErr
-					}
-					mu.Unlock()
-					continue
-				}
-
-				if err := os.WriteFile(j.fileName, j.data, 0644); err != nil {
-					mu.Lock()
-					if writeErr == nil {
-						writeErr = err
+					if firstErr == nil {
+						firstErr = err
 					}
 					mu.Unlock()
 				}
 			}
 		}()
 	}
-
-	writeFile := shimcompiler.WriteFile(func(fileName, text string, data *shimcompiler.WriteFileData) error {
-		absFileName := fileName
-		if !filepath.IsAbs(absFileName) {
-			absFileName = filepath.Join(opts.Cwd, absFileName)
-		}
-
-		if strings.HasSuffix(fileName, ".js") || strings.HasSuffix(fileName, ".d.ts") {
-			text = rewriter.RewriteSource(absFileName, text)
-		}
-
-		// Convert to []byte once and send to worker pool.
-		// Using unsafe conversion would save this copy but is risky
-		// since the compiler may reuse the string's backing array.
-		buf := []byte(text)
-
-		mu.Lock()
-		emitted = append(emitted, absFileName)
-		mu.Unlock()
-
-		jobs <- writeJob{fileName: absFileName, data: buf}
-		return nil
-	})
-
-	res := prog.Emit(ctx, writeFile)
-
-	// Close channel and wait for all writers to finish
-	close(jobs)
 	wg.Wait()
 
-	if writeErr != nil {
-		return nil, fmt.Errorf("write failed: %w", writeErr)
-	}
-	if res == nil {
-		return nil, fmt.Errorf("emit failed")
+	return firstErr
+}
+
+func rewriteFile(rewriter *paths.Rewriter, file string) error {
+	source, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", file, err)
 	}
 
-	return &Result{
-		EmittedFiles: emitted,
-	}, nil
+	rewritten, edits := rewriter.Rewrite(file, string(source))
+	if len(edits) == 0 && rewritten == string(source) {
+		return nil
+	}
+
+	info, err := os.Stat(file)
+	mode := os.FileMode(0644)
+	if err == nil {
+		mode = info.Mode()
+	}
+	if err := os.WriteFile(file, []byte(rewritten), mode); err != nil {
+		return fmt.Errorf("writing %s: %w", file, err)
+	}
+
+	// Rewriting moves columns, so the companion map has to move with them or
+	// every breakpoint and stack frame on an import line lands off by the
+	// difference.
+	return adjustCompanionMap(file, edits)
+}
+
+func adjustCompanionMap(file string, edits []Edit) error {
+	if len(edits) == 0 {
+		return nil
+	}
+
+	mapFile := file + ".map"
+	original, err := os.ReadFile(mapFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", mapFile, err)
+	}
+
+	updated, err := paths.AdjustSourceMap(original, edits)
+	if err != nil {
+		// A map we cannot parse is not worth failing a build over; the code is
+		// already correct, only debugging fidelity suffers.
+		return nil
+	}
+	if string(updated) == string(original) {
+		return nil
+	}
+
+	return os.WriteFile(mapFile, updated, 0644)
+}
+
+// Edit aliases the rewriter's edit record so callers need only this package.
+type Edit = paths.Edit
+
+func workerCount(jobs int) int {
+	workers := runtime.NumCPU()
+	if v := os.Getenv("TTSGO_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			workers = n
+		}
+	}
+	return min(max(workers, 1), jobs)
+}
+
+// ResolveOutDir reports where the compiler will write, given a config and an
+// optional override.
+func ResolveOutDir(cfg *tsc.Config, override, cwd string) string {
+	if override == "" {
+		return cfg.OutDir
+	}
+	if filepath.IsAbs(override) {
+		return override
+	}
+	return filepath.Join(cwd, override)
 }

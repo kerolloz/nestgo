@@ -9,6 +9,7 @@ import (
 
 	"github.com/kerolloz/nestgo/internal/assets"
 	"github.com/kerolloz/nestgo/internal/config"
+	"github.com/kerolloz/ttsgo/pkg/tsc"
 )
 
 // Build deletes outDir when deleteOutDir is set. That is the only destructive
@@ -111,7 +112,7 @@ func newTestOrchestrator(t *testing.T, cwd, outDir string, deleteOutDir bool) *O
 				TsConfigPath: "tsconfig.json",
 			},
 		},
-		TsConfig: &config.TsConfig{OutDir: outDir},
+		TsConfig: &tsc.Config{OutDir: outDir},
 		Assets:   assetMgr,
 	}
 }

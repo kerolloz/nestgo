@@ -223,3 +223,102 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// A tsconfig pattern like "@app/*" also matches the real package "@app/thing"
+// once someone installs it. Rewriting that to a relative path breaks the
+// import, so an installed package has to win (nest-cli#838).
+func TestRewriteSource_InstalledPackageBeatsAlias(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "src", "app"), 0755)
+	os.WriteFile(filepath.Join(tmp, "src", "app", "thing.ts"), []byte(""), 0644)
+	// The same name exists as a real dependency.
+	os.MkdirAll(filepath.Join(tmp, "node_modules", "@app", "thing"), 0755)
+
+	r := New(Options{
+		Cwd:     tmp,
+		Paths:   map[string][]string{"@app/*": {"./src/app/*"}},
+		OutDir:  filepath.Join(tmp, "dist"),
+		RootDir: "src",
+	})
+
+	input := `const t = require("@app/thing");`
+	if got := r.RewriteSource(filepath.Join(tmp, "dist", "main.js"), input); got != input {
+		t.Errorf("installed package should be left alone, got: %s", got)
+	}
+}
+
+func TestRewriteSource_AliasStillWinsWhenNotInstalled(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "src", "app"), 0755)
+	os.WriteFile(filepath.Join(tmp, "src", "app", "thing.ts"), []byte(""), 0644)
+	os.MkdirAll(filepath.Join(tmp, "node_modules", "unrelated"), 0755)
+
+	r := New(Options{
+		Cwd:     tmp,
+		Paths:   map[string][]string{"@app/*": {"./src/app/*"}},
+		OutDir:  filepath.Join(tmp, "dist"),
+		RootDir: "src",
+	})
+
+	got := r.RewriteSource(filepath.Join(tmp, "dist", "main.js"), `const t = require("@app/thing");`)
+	if !contains(got, "./app/thing.js") {
+		t.Errorf("expected the alias to be rewritten, got: %s", got)
+	}
+}
+
+func TestPackageNameOf(t *testing.T) {
+	for _, tc := range []struct{ specifier, want string }{
+		{"lodash", "lodash"},
+		{"lodash/fp", "lodash"},
+		{"@nestjs/common", "@nestjs/common"},
+		{"@nestjs/common/decorators", "@nestjs/common"},
+		{"@scoped", ""},
+	} {
+		if got := packageNameOf(tc.specifier); got != tc.want {
+			t.Errorf("packageNameOf(%q) = %q, want %q", tc.specifier, got, tc.want)
+		}
+	}
+}
+
+// Rewrite reports where it changed the text so the companion source map can be
+// corrected.
+func TestRewriteReportsEdits(t *testing.T) {
+	r, tmp := setupTestRewriter(t)
+	fileName := filepath.Join(tmp, "dist", "app.js")
+
+	text := "const a = 1;\nconst h = require(\"@utils/helper\");\n"
+	_, edits := r.Rewrite(fileName, text)
+
+	if len(edits) != 1 {
+		t.Fatalf("expected one edit, got %+v", edits)
+	}
+	if edits[0].Line != 1 {
+		t.Errorf("edit line = %d, want 1", edits[0].Line)
+	}
+	// "@utils/helper" (13) -> "./utils/helper.js" (17)
+	if edits[0].Delta != 4 {
+		t.Errorf("edit delta = %d, want 4", edits[0].Delta)
+	}
+	if edits[0].Column <= 0 {
+		t.Errorf("edit column = %d, want the specifier's column", edits[0].Column)
+	}
+}
+
+func TestPositionOf(t *testing.T) {
+	text := "abc\ndefgh\nij"
+	for _, tc := range []struct {
+		offset    int
+		line, col int
+	}{
+		{0, 0, 0},
+		{2, 0, 2},
+		{4, 1, 0},
+		{7, 1, 3},
+		{10, 2, 0},
+	} {
+		line, col := positionOf(text, tc.offset)
+		if line != tc.line || col != tc.col {
+			t.Errorf("positionOf(%d) = (%d,%d), want (%d,%d)", tc.offset, line, col, tc.line, tc.col)
+		}
+	}
+}

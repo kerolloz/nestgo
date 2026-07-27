@@ -6,21 +6,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/kerolloz/nestgo/internal/assets"
 	"github.com/kerolloz/nestgo/internal/config"
 	"github.com/kerolloz/nestgo/internal/logger"
 	"github.com/kerolloz/nestgo/internal/process"
-	"github.com/kerolloz/nestgo/internal/watcher"
 	"github.com/kerolloz/ttsgo/pkg/engine"
+	"github.com/kerolloz/ttsgo/pkg/toolchain"
+	"github.com/kerolloz/ttsgo/pkg/tsc"
 )
 
 type Orchestrator struct {
 	Cwd        string
 	NestConfig *config.NestConfig
-	TsConfig   *config.TsConfig
+	TsConfig   *tsc.Config
 	Assets     *assets.Manager
+	Compiler   *toolchain.TSC
 	runner     process.ProcessRunner
 }
 
@@ -57,20 +58,22 @@ func New(opts Options) (*Orchestrator, error) {
 	}
 	nestCfg.CompilerOptions.TsConfigPath = tsConfigPath
 
-	tsCfg, err := config.LoadTsConfig(cwd, tsConfigPath)
+	compiler, err := toolchain.Locate(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("tsconfig load: %w", err)
+		return nil, err
 	}
 
-	// Validate decorator metadata flags
-	if !tsCfg.EmitDecoratorMetadata {
-		logger.Warn("emitDecoratorMetadata is not enabled in tsconfig.json.")
-		logger.Warn("NestJS dependency injection requires this flag.")
+	// The compiler resolves the tsconfig for us: extends chains, include globs
+	// and defaults all come back already applied, so nestgo cannot disagree
+	// with the compiler about where output goes.
+	tsCfg, err := tsc.LoadConfig(context.Background(), tsc.Options{
+		Bin: compiler.Path, Cwd: cwd, Project: tsConfigPath,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if !tsCfg.ExperimentalDecorators {
-		logger.Warn("experimentalDecorators is not enabled in tsconfig.json.")
-		logger.Warn("NestJS decorators require this flag.")
-	}
+
+	reportConfigProblems(tsCfg)
 
 	var assetList []assets.Asset
 	for _, a := range nestCfg.CompilerOptions.Assets {
@@ -111,8 +114,23 @@ func New(opts Options) (*Orchestrator, error) {
 		NestConfig: nestCfg,
 		TsConfig:   tsCfg,
 		Assets:     assetMgr,
+		Compiler:   compiler,
 		runner:     runner,
 	}, nil
+}
+
+// reportConfigProblems warns about settings TypeScript 7 rejects and about
+// NestJS requirements the compiler is happy to ignore. The compiler reports the
+// former itself, but only after failing; saying it first, with the fix, turns a
+// dead end into a two-line edit.
+func reportConfigProblems(cfg *tsc.Config) {
+	for _, p := range tsc.Preflight(cfg) {
+		logger.Warn("compilerOptions.%s: %s", p.Option, p.Detail)
+		logger.Warn("  fix: %s", p.Fix)
+	}
+	for _, w := range tsc.CheckNestJS(cfg) {
+		logger.Warn("compilerOptions.%s: %s", w.Option, w.Detail)
+	}
 }
 
 func (o *Orchestrator) KillRunner() {
@@ -130,22 +148,8 @@ func (o *Orchestrator) WaitRunner() int {
 
 func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 	if o.NestConfig.CompilerOptions.DeleteOutDir {
-		// An absolute outDir must be honoured, not joined onto Cwd — the engine
-		// and the asset manager both resolve it that way, and joining would
-		// delete a path the compiler never wrote to.
-		absOut := o.TsConfig.OutDir
-		if !filepath.IsAbs(absOut) {
-			absOut = filepath.Join(o.Cwd, absOut)
-		}
-		absOut = filepath.Clean(absOut)
-		if absOut == o.Cwd || !strings.HasPrefix(absOut+string(filepath.Separator), o.Cwd+string(filepath.Separator)) {
-			return fmt.Errorf("outDir %q resolves to or outside the project root, refusing to delete", o.TsConfig.OutDir)
-		}
-		if err := os.RemoveAll(absOut); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to delete outDir: %w", err)
-		}
-		if o.TsConfig.TsBuildInfoFile != "" {
-			_ = os.Remove(filepath.Join(o.Cwd, o.TsConfig.TsBuildInfoFile))
+		if err := o.deleteOutDir(); err != nil {
+			return err
 		}
 	}
 
@@ -153,8 +157,9 @@ func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 	res, err := engine.CompileWithRewrite(ctx, engine.Options{
 		Cwd:          o.Cwd,
 		TsConfigPath: o.NestConfig.CompilerOptions.TsConfigPath,
-		OutDir:       o.TsConfig.OutDir,
+		Bin:          o.compilerPath(),
 		Emit:         true,
+		Incremental:  true,
 	})
 	if err != nil {
 		return fmt.Errorf("compilation failed: %w", err)
@@ -186,6 +191,41 @@ func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 	return nil
 }
 
+func (o *Orchestrator) compilerPath() string {
+	if o.Compiler == nil {
+		return ""
+	}
+	return o.Compiler.Path
+}
+
+// deleteOutDir removes the output directory, refusing anything that resolves to
+// or outside the project root — an outDir of "." would otherwise take the
+// sources with it.
+func (o *Orchestrator) deleteOutDir() error {
+	absOut := o.TsConfig.OutDir
+	if !filepath.IsAbs(absOut) {
+		absOut = filepath.Join(o.Cwd, absOut)
+	}
+	absOut = filepath.Clean(absOut)
+
+	if absOut == o.Cwd || !strings.HasPrefix(absOut+string(filepath.Separator), o.Cwd+string(filepath.Separator)) {
+		return fmt.Errorf("outDir %q resolves to or outside the project root, refusing to delete", o.TsConfig.OutDir)
+	}
+	if err := os.RemoveAll(absOut); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete outDir: %w", err)
+	}
+	if o.TsConfig.TsBuildInfoFile != "" {
+		_ = os.Remove(o.TsConfig.TsBuildInfoFile)
+	}
+	return nil
+}
+
+// Watch compiles continuously and restarts the application after every clean
+// build.
+//
+// The compiler does the file watching. It tracks the project's real file set
+// and recompiles incrementally, which is both more accurate and far faster
+// than watching the source directory ourselves and re-running a full build.
 func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 	logger.Step("Watching %s for changes...", o.NestConfig.SourceRoot)
 
@@ -195,42 +235,61 @@ func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 		}
 	}
 
-	rebuildCh := make(chan struct{}, 1)
-	absSourceRoot := filepath.Join(o.Cwd, o.NestConfig.SourceRoot)
-
-	wt, err := watcher.New(ctx, absSourceRoot, 500*time.Millisecond, func() {
-		select {
-		case rebuildCh <- struct{}{}:
-		default:
+	if o.NestConfig.CompilerOptions.DeleteOutDir {
+		if err := o.deleteOutDir(); err != nil {
+			return err
 		}
-	})
-	if err != nil {
-		return err
-	}
-	defer wt.Close()
-
-	// Initial build
-	if err := o.Build(ctx, false); err != nil {
-		logger.Error("Initial build failed: %v", err)
-	} else {
-		logger.Success("Build complete")
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			if o.runner != nil {
-				o.runner.Kill()
+	defer o.KillRunner()
+
+	err := engine.Watch(ctx, engine.Options{
+		Cwd:          o.Cwd,
+		TsConfigPath: o.NestConfig.CompilerOptions.TsConfigPath,
+		Bin:          o.compilerPath(),
+		Emit:         true,
+	}, func(res *engine.Result) error {
+		if len(res.Diagnostics) > 0 {
+			for _, d := range res.Diagnostics {
+				logger.Error("%s", d)
 			}
+			// Leave the running process alone: it is still serving the last
+			// good build, which beats taking the app down over a typo.
 			return nil
-		case <-rebuildCh:
-			logger.Step("Change detected — rebuilding...")
-			if err := o.Build(ctx, true); err != nil {
-				logger.Error("Build failed: %v", err)
-			} else {
-				logger.Success("Rebuild complete")
-			}
 		}
+
+		// The compiler completes a cycle whenever it re-checks, including when
+		// nothing needed re-emitting. Restarting then would bounce the app for
+		// no reason.
+		if !res.First && len(res.EmittedFiles) == 0 {
+			return nil
+		}
+
+		if err := o.Assets.Copy(); err != nil {
+			logger.Error("Asset copy failed: %v", err)
+		}
+
+		o.restart()
+		logger.Success("Build complete")
+		return nil
+	})
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// restart replaces the running application. The old process is killed only
+// after a successful compile, so a broken edit never leaves nothing running.
+func (o *Orchestrator) restart() {
+	if o.runner == nil {
+		return
+	}
+	logger.Step("Restarting...")
+	o.runner.Kill()
+	if err := o.runner.Start(); err != nil {
+		logger.Error("Failed to start process: %v", err)
 	}
 }
 
