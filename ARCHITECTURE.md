@@ -178,11 +178,16 @@ Diagnostics are parsed with the classic positional regex, folding indented conti
 lines into the preceding message (TypeScript 7 emits multi-line elaborations). Exit codes
 map to: 0 success, 2 compiled-with-errors, 1 errors-and-no-output.
 
-**`PWD` must match the working directory we `chdir` to.** Go's `os.Getwd` trusts `$PWD`
-when it stats to the same inode, so a stale or symlinked `PWD` silently changes every path
-in diagnostics and in `--listEmittedFiles` output. On macOS (`/tmp` → `/private/tmp`) and
-in containers this is a live hazard, and nestgo is a Go program spawning a Go program —
-doubly exposed.
+**Leave `Cmd.Env` alone.** Go's `os.Getwd` trusts `$PWD` whenever it stats to the same
+inode as the real working directory, so whether the compiler reports paths under the
+directory we asked for or under its resolved target comes down to what `PWD` says — and
+it silently changes every path in diagnostics and `--listEmittedFiles`. On macOS
+(`/tmp` → `/private/tmp`) and in containers with symlinked mounts this is live, and we
+are a Go program spawning a Go program, so both sides behave this way.
+
+`os/exec` already solves it: with `Cmd.Env` nil it sets `PWD` to `Cmd.Dir`. Setting
+`Cmd.Env` explicitly is what breaks it — verified, and guarded by a test that fails when
+`Env` is set without carrying `PWD`.
 
 ### watch
 
