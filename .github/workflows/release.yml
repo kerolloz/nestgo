@@ -38,6 +38,32 @@ jobs:
       - name: Verify binaries
         run: ls -lh bin/ttsgo bin/nestgo
 
+      # The load-bearing check. go:linkname into typescript-go's internals is not
+      # type-checked, so a signature drift upstream compiles cleanly, passes every
+      # unit test, and segfaults on the first real compile. Only running the output
+      # catches it. See ARCHITECTURE.md §3.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: E2E — ttsgo compiles and the output runs
+        working-directory: tests/dummy-ts
+        run: |
+          rm -rf dist
+          ../../bin/ttsgo -p tsconfig.json
+          OUT=$(node dist/main.js)
+          echo "$OUT"
+          [ "$OUT" = "App running. 2 + 3 = 5" ] || { echo "unexpected output"; exit 1; }
+
+      - name: E2E — nestgo builds and the output runs
+        working-directory: tests/dummy-ts
+        run: |
+          rm -rf dist
+          ../../bin/nestgo build
+          OUT=$(node dist/main.js)
+          echo "$OUT"
+          [ "$OUT" = "App running. 2 + 3 = 5" ] || { echo "unexpected output"; exit 1; }
+
   # ── Build: parallel native compilation on 3 OS runners ────
   build:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -212,7 +238,7 @@ jobs:
           for dir in packages/ttsgo-* packages/nestgo-*; do
             if [ -f "$dir/package.json" ]; then
               echo "Publishing $(basename $dir)..."
-              (cd "$dir" && npm publish --access public --provenance) || true
+              (cd "$dir" && npm publish --access public --provenance)
             fi
           done
         env:
@@ -223,7 +249,7 @@ jobs:
           for dir in packages/ttsgo packages/nestgo; do
             if [ -f "$dir/package.json" ]; then
               echo "Publishing $(basename $dir)..."
-              (cd "$dir" && npm publish --access public --provenance) || true
+              (cd "$dir" && npm publish --access public --provenance)
             fi
           done
         env:
