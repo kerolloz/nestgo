@@ -90,8 +90,9 @@ uses the identical pattern — but it is the wrong trade for nestgo:
   there is no CLI for that. nestgo needs compile, emit, and a list of what changed. All
   three are on the stable CLI surface.
 - **The CLI is faster than what we had.** The embedded engine had no incremental
-  compilation. `tsc --incremental` in watch mode re-emits only affected files: measured
-  at 96 ms for a one-file edit in an 801-file project, versus 423 ms cold.
+  compilation. `tsc --incremental` in watch mode re-emits only affected files: 96 ms for
+  a one-file edit in an 801-file synthetic project, versus 423 ms cold (see the note on
+  measurements below).
 
 Embedding remains the only route to *native* transformer support (`samchon/ttsc` obtains
 tsgo's builtin transformer chain via `//go:linkname internal/compiler.getScriptTransformers`).
@@ -100,7 +101,11 @@ does not require transformers — see §6.
 
 ### Why the CLI surface is sufficient
 
-Measured against `typescript@7.0.2`:
+The table below comes from experiments against `typescript@7.0.2` conducted while
+writing this document, **not** from this repository's own test suite. Phase 2 must
+reproduce the load-bearing ones in-repo before the embedded engine is deleted —
+above all the decorator-emit equivalence, since NestJS dependency injection
+depends on it.
 
 | Capability | Finding |
 | --- | --- |

@@ -112,8 +112,16 @@ func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
 		rootDir = prog.ParsedConfig.CompilerOptions().RootDir
 	}
 
-	rewriter := paths.New(opts.Cwd, pathMap, outDir, rootDir,
-		prog.ParsedConfig.CompilerOptions().GetPathsBasePath(opts.Cwd))
+	// GetPathsBasePath returns baseUrl when set, otherwise the directory of the
+	// tsconfig that declared `paths` (not necessarily Cwd), and "" when the
+	// project has no paths at all.
+	rewriter := paths.New(paths.Options{
+		Cwd:       opts.Cwd,
+		Paths:     pathMap,
+		OutDir:    outDir,
+		RootDir:   rootDir,
+		PathsBase: prog.ParsedConfig.CompilerOptions().GetPathsBasePath(opts.Cwd),
+	})
 
 	// --- Concurrent I/O pipeline ---
 	// The compiler calls WriteFile synchronously per source file, but I/O

@@ -4,10 +4,10 @@ package paths
 // represent comments and string literals where import patterns should not
 // be matched.
 //
-// ponytail: regex literals are not recognized — one containing an unbalanced
-// quote (e.g. /don't/) opens a phantom string region, and imports after it
-// are not rewritten. Fixing this needs a real JS tokenizer; upgrade if it
-// bites in practice.
+// Known limitation: regex literals are not recognized. A regex containing an
+// unbalanced quote (e.g. /don't/) opens a phantom string region, so imports
+// after it on that file are left unrewritten. Fixing it properly needs a real
+// JS tokenizer.
 func skipRegions(text string) []region {
 	var regions []region
 	i := 0

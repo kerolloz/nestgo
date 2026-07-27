@@ -14,7 +14,7 @@ type Rewriter struct {
 	cwd        string
 	absOutDir  string
 	sourceBase string
-	pathsBase  string // base dir for resolving paths targets (tsconfig baseUrl)
+	pathsBase  string // base dir that `paths` targets resolve against
 	matchers   []pathMatcher
 	statCache  sync.Map // caches os.Stat results: path -> bool (isDir)
 }
@@ -55,34 +55,40 @@ func collectMatches(re *regexp.Regexp, content string) []match {
 	return out
 }
 
-// New creates a Rewriter. baseURL is the tsconfig baseUrl (paths targets are
-// resolved relative to it); pass "" to resolve them against cwd.
-func New(cwd string, paths map[string][]string, outDir, rootDir, baseURL string) *Rewriter {
-	absOutDir := outDir
-	if !filepath.IsAbs(outDir) {
-		absOutDir = filepath.Join(cwd, outDir)
-	}
+// Options configures a Rewriter. Every directory may be absolute or relative
+// to Cwd.
+type Options struct {
+	Cwd     string
+	Paths   map[string][]string // tsconfig compilerOptions.paths
+	OutDir  string              // where emitted files land
+	RootDir string              // tsconfig rootDir; the source tree that OutDir mirrors
 
-	sourceBase := cwd
-	if rootDir != "" {
-		if filepath.IsAbs(rootDir) {
-			sourceBase = rootDir
-		} else {
-			sourceBase = filepath.Join(cwd, rootDir)
+	// PathsBase is the directory that Paths targets resolve against. Under
+	// TypeScript this is baseUrl when set, otherwise the directory of the
+	// tsconfig that declared the paths — which is not necessarily Cwd, e.g.
+	// when compiling -p configs/tsconfig.json. Empty means Cwd.
+	PathsBase string
+}
+
+// New creates a Rewriter.
+func New(opts Options) *Rewriter {
+	resolve := func(p, fallback string) string {
+		if p == "" {
+			return fallback
 		}
-	}
-
-	pathsBase := cwd
-	if baseURL != "" {
-		if filepath.IsAbs(baseURL) {
-			pathsBase = baseURL
-		} else {
-			pathsBase = filepath.Join(cwd, baseURL)
+		if filepath.IsAbs(p) {
+			return p
 		}
+		return filepath.Join(opts.Cwd, p)
 	}
 
-	r := &Rewriter{cwd: cwd, absOutDir: absOutDir, sourceBase: sourceBase, pathsBase: pathsBase}
-	r.buildMatchers(paths)
+	r := &Rewriter{
+		cwd:        opts.Cwd,
+		absOutDir:  resolve(opts.OutDir, opts.Cwd),
+		sourceBase: resolve(opts.RootDir, opts.Cwd),
+		pathsBase:  resolve(opts.PathsBase, opts.Cwd),
+	}
+	r.buildMatchers(opts.Paths)
 	return r
 }
 

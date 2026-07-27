@@ -24,25 +24,55 @@ func setupTestRewriter(t *testing.T) (*Rewriter, string) {
 	}
 
 	outDir := filepath.Join(tmp, "dist")
-	r := New(tmp, paths, outDir, "src", "")
+	r := New(Options{Cwd: tmp, Paths: paths, OutDir: outDir, RootDir: "src"})
 	return r, tmp
 }
 
-func TestRewriteSource_BaseURLRelativeTargets(t *testing.T) {
+// PathsBase is baseUrl when tsconfig sets it: targets resolve under src/,
+// not the project root.
+func TestRewriteSource_PathsBaseFromBaseURL(t *testing.T) {
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
 	os.MkdirAll(filepath.Join(srcDir, "utils"), 0755)
 	os.WriteFile(filepath.Join(srcDir, "utils", "helper.ts"), []byte(""), 0644)
 
-	// baseUrl "./src": targets are relative to src, not the project root.
-	paths := map[string][]string{"@utils/*": {"utils/*"}}
-	r := New(tmp, paths, filepath.Join(tmp, "dist"), "src", "src")
+	r := New(Options{
+		Cwd:       tmp,
+		Paths:     map[string][]string{"@utils/*": {"utils/*"}},
+		OutDir:    filepath.Join(tmp, "dist"),
+		RootDir:   "src",
+		PathsBase: "src",
+	})
 
-	fileName := filepath.Join(tmp, "dist", "app.js")
-	result := r.RewriteSource(fileName, `const h = require("@utils/helper");`)
+	result := r.RewriteSource(filepath.Join(tmp, "dist", "app.js"),
+		`const h = require("@utils/helper");`)
 
 	if !contains(result, "./utils/helper.js") {
-		t.Errorf("expected baseUrl-relative rewrite to ./utils/helper.js, got: %s", result)
+		t.Errorf("expected ./utils/helper.js, got: %s", result)
+	}
+}
+
+// Without baseUrl, TypeScript resolves paths against the directory of the
+// tsconfig that declared them — which is not the cwd when compiling
+// -p configs/tsconfig.json. Targets below are relative to configs/.
+func TestRewriteSource_PathsBaseFromTsconfigDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "configs", "shared", "utils"), 0755)
+	os.WriteFile(filepath.Join(tmp, "configs", "shared", "utils", "helper.ts"), []byte(""), 0644)
+
+	r := New(Options{
+		Cwd:       tmp,
+		Paths:     map[string][]string{"@utils/*": {"./shared/utils/*"}},
+		OutDir:    filepath.Join(tmp, "dist"),
+		RootDir:   filepath.Join(tmp, "configs"),
+		PathsBase: filepath.Join(tmp, "configs"),
+	})
+
+	result := r.RewriteSource(filepath.Join(tmp, "dist", "app.js"),
+		`const h = require("@utils/helper");`)
+
+	if !contains(result, "./shared/utils/helper.js") {
+		t.Errorf("expected ./shared/utils/helper.js, got: %s", result)
 	}
 }
 

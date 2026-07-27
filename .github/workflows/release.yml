@@ -232,26 +232,17 @@ jobs:
           console.log(`\nBumped ${pkgs.length} package(s) to ${version}`);
           EOF
 
-      # Publish platform packages first, then main packages
+      # npm publish is not idempotent: republishing an existing version fails.
+      # Skipping versions that are already on the registry keeps a retry of a
+      # partially-failed release able to finish, while any other publish error
+      # still fails the job.
       - name: Publish platform packages
-        run: |
-          for dir in packages/ttsgo-* packages/nestgo-*; do
-            if [ -f "$dir/package.json" ]; then
-              echo "Publishing $(basename $dir)..."
-              (cd "$dir" && npm publish --access public --provenance)
-            fi
-          done
+        run: .github/scripts/publish.sh packages/ttsgo-* packages/nestgo-*
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish main packages
-        run: |
-          for dir in packages/ttsgo packages/nestgo; do
-            if [ -f "$dir/package.json" ]; then
-              echo "Publishing $(basename $dir)..."
-              (cd "$dir" && npm publish --access public --provenance)
-            fi
-          done
+        run: .github/scripts/publish.sh packages/ttsgo packages/nestgo
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
