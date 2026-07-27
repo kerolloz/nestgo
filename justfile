@@ -13,6 +13,15 @@ build:
 	cd packages/ttsgo && go build -ldflags="-s -w" -o ../../bin/ttsgo ./cmd/ttsgo
 	cd packages/nestgo && go build -ldflags="-s -w" -o ../../bin/nestgo .
 
+# Run the Go test suites for both packages
+test:
+	cd packages/ttsgo && go test ./pkg/...
+	cd packages/nestgo && go test ./...
+
+# Verify emitted decorator metadata still matches tsc (NestJS DI depends on it)
+verify-decorators:
+	./scripts/verify-decorator-emit.sh
+
 # Clean build artifacts.
 # Only the release-staged binaries under packages/*/bin are removed — the
 # package bin/ directories also hold the committed launcher scripts, so they

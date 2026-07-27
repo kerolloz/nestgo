@@ -101,15 +101,14 @@ does not require transformers — see §6.
 
 ### Why the CLI surface is sufficient
 
-The table below comes from experiments against `typescript@7.0.2` conducted while
-writing this document, **not** from this repository's own test suite. Phase 2 must
-reproduce the load-bearing ones in-repo before the embedded engine is deleted —
-above all the decorator-emit equivalence, since NestJS dependency injection
-depends on it.
+Except where noted, the table below comes from experiments against
+`typescript@7.0.2` conducted while writing this document, **not** from this
+repository's test suite. Phase 2 must reproduce the load-bearing ones in-repo
+before the embedded engine is deleted.
 
 | Capability | Finding |
 | --- | --- |
-| **Decorator emit** | `emitDecoratorMetadata` output is **byte-identical** to `tsc@5.9.3` (`__decorate`/`__param`/`__metadata`). Full `dist/` diff: identical `.js` and `.d.ts`. NestJS DI is safe. |
+| **Decorator emit** | **Verified in-repo** (`scripts/verify-decorator-emit.sh`, run in CI). Every `design:paramtypes` / `design:type` / `design:returntype` value and every `__param` position is identical to `tsc@5.9.3` — the version `@nestjs/cli` 11.x depends on. NestJS DI is safe. Note the output is **not** byte-identical, contrary to the external benchmark: tsgo preserves per-parameter comments in a multi-line parameter list where tsc collapses them. That difference is cosmetic. |
 | **Diagnostics** | `file(line,col): error TSxxxx: msg` on stdout, unchanged. Exit codes: 0 clean, 2 errors-with-emit, 1 errors-without-emit. |
 | **Watch** | `--watch` emits the classic sentinels (`File change detected...`, `Found N errors. Watching for file changes.`). `--preserveWatchOutput` suppresses screen clears. SIGTERM exits cleanly. |
 | **Incremental** | `--incremental` / `.tsbuildinfo` fully supported, including in watch mode. |
@@ -179,11 +178,16 @@ Diagnostics are parsed with the classic positional regex, folding indented conti
 lines into the preceding message (TypeScript 7 emits multi-line elaborations). Exit codes
 map to: 0 success, 2 compiled-with-errors, 1 errors-and-no-output.
 
-**`PWD` must match the working directory we `chdir` to.** Go's `os.Getwd` trusts `$PWD`
-when it stats to the same inode, so a stale or symlinked `PWD` silently changes every path
-in diagnostics and in `--listEmittedFiles` output. On macOS (`/tmp` → `/private/tmp`) and
-in containers this is a live hazard, and nestgo is a Go program spawning a Go program —
-doubly exposed.
+**Leave `Cmd.Env` alone.** Go's `os.Getwd` trusts `$PWD` whenever it stats to the same
+inode as the real working directory, so whether the compiler reports paths under the
+directory we asked for or under its resolved target comes down to what `PWD` says — and
+it silently changes every path in diagnostics and `--listEmittedFiles`. On macOS
+(`/tmp` → `/private/tmp`) and in containers with symlinked mounts this is live, and we
+are a Go program spawning a Go program, so both sides behave this way.
+
+`os/exec` already solves it: with `Cmd.Env` nil it sets `PWD` to `Cmd.Dir`. Setting
+`Cmd.Env` explicitly is what breaks it — verified, and guarded by a test that fails when
+`Env` is set without carrying `PWD`.
 
 ### watch
 
@@ -216,6 +220,12 @@ Requirements, several of which are bugs in existing tools:
 - Update `.js.map` mappings when rewriting shifts columns. `tsc-alias` does not do this;
   its source maps are stale on every import line.
 
+**Deliberate divergence:** we append `.js` to *every* extensionless relative import,
+including ones that were never aliases, so emitted CommonJS reads
+`require("./service.js")` where `nest build` emits `require("./service")`. Both
+resolve identically under CommonJS, and the explicit form is what ESM will require.
+Revisit if a project needs byte-for-byte parity with `nest build` output.
+
 ### config and preflight
 
 `nest-cli.json` is parsed by nestgo (defaults, `projects[app]` precedence, builder
@@ -223,12 +233,15 @@ validation). The **resolved tsconfig comes from `tsc --showConfig`** rather than
 hand-rolled parser, eliminating an entire class of divergence between what nestgo believes
 and what the compiler does.
 
-TypeScript 7 removed options that stock NestJS templates still use. Verified against the
-unmodified `@nestjs/schematics@11.1.0` template, which **does not compile**:
+TypeScript 7 removed options that existing NestJS projects rely on. The stock
+`@nestjs/schematics@11.1.0` template **does not compile** untouched — though it is closer
+than older projects, since it already uses `module`/`moduleResolution: "nodenext"`, and
+`baseUrl` is the only removed option it sets. Projects generated before that switch carry
+more of the list:
 
 | Removed / changed | Error | Migration |
 | --- | --- | --- |
-| `baseUrl` | TS5102 | `"paths": { "*": ["./*"] }` |
+| `baseUrl` | TS5102 | drop it; make `paths` targets relative |
 | implicit `rootDir` | TS5011 | set `rootDir` explicitly |
 | non-relative `paths` values | TS5090 | prefix with `./` |
 | `moduleResolution: node`/`node10`/`classic` | TS5108 | `bundler` or `nodenext` |
