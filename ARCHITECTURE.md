@@ -101,15 +101,14 @@ does not require transformers — see §6.
 
 ### Why the CLI surface is sufficient
 
-The table below comes from experiments against `typescript@7.0.2` conducted while
-writing this document, **not** from this repository's own test suite. Phase 2 must
-reproduce the load-bearing ones in-repo before the embedded engine is deleted —
-above all the decorator-emit equivalence, since NestJS dependency injection
-depends on it.
+Except where noted, the table below comes from experiments against
+`typescript@7.0.2` conducted while writing this document, **not** from this
+repository's test suite. Phase 2 must reproduce the load-bearing ones in-repo
+before the embedded engine is deleted.
 
 | Capability | Finding |
 | --- | --- |
-| **Decorator emit** | `emitDecoratorMetadata` output is **byte-identical** to `tsc@5.9.3` (`__decorate`/`__param`/`__metadata`). Full `dist/` diff: identical `.js` and `.d.ts`. NestJS DI is safe. |
+| **Decorator emit** | **Verified in-repo** (`scripts/verify-decorator-emit.sh`, run in CI). Every `design:paramtypes` / `design:type` / `design:returntype` value and every `__param` position is identical to `tsc@5.9.3` — the version `@nestjs/cli` 11.x depends on. NestJS DI is safe. Note the output is **not** byte-identical, contrary to the external benchmark: tsgo preserves per-parameter comments in a multi-line parameter list where tsc collapses them. That difference is cosmetic. |
 | **Diagnostics** | `file(line,col): error TSxxxx: msg` on stdout, unchanged. Exit codes: 0 clean, 2 errors-with-emit, 1 errors-without-emit. |
 | **Watch** | `--watch` emits the classic sentinels (`File change detected...`, `Found N errors. Watching for file changes.`). `--preserveWatchOutput` suppresses screen clears. SIGTERM exits cleanly. |
 | **Incremental** | `--incremental` / `.tsbuildinfo` fully supported, including in watch mode. |
@@ -215,6 +214,12 @@ Requirements, several of which are bugs in existing tools:
   moves toward.
 - Update `.js.map` mappings when rewriting shifts columns. `tsc-alias` does not do this;
   its source maps are stale on every import line.
+
+**Deliberate divergence:** we append `.js` to *every* extensionless relative import,
+including ones that were never aliases, so emitted CommonJS reads
+`require("./service.js")` where `nest build` emits `require("./service")`. Both
+resolve identically under CommonJS, and the explicit form is what ESM will require.
+Revisit if a project needs byte-for-byte parity with `nest build` output.
 
 ### config and preflight
 

@@ -1,0 +1,13 @@
+__metadata("design:type", String)
+__metadata("design:type", Function),
+__metadata("design:paramtypes", [Number, Boolean]),
+__metadata("design:returntype", Array)
+__param(1, (0, decorators_1.Inject)('CONFIG')),
+__param(2, (0, decorators_1.Optional)()),
+__metadata("design:paramtypes", [types_1.Repository, Object, String])
+__metadata("design:type", Function),
+__metadata("design:paramtypes", []),
+__metadata("design:returntype", Boolean)
+__param(1, (0, decorators_1.Inject)('CONFIG')),
+__param(2, (0, decorators_1.Optional)()),
+__metadata("design:paramtypes", [types_1.Logger, Object, Object])

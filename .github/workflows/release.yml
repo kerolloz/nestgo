@@ -64,6 +64,11 @@ jobs:
           echo "$OUT"
           [ "$OUT" = "App running. 2 + 3 = 5" ] || { echo "unexpected output"; exit 1; }
 
+      # NestJS resolves constructor dependencies from design:paramtypes. If our
+      # emit drifts from tsc's, DI breaks in the user's app, not here.
+      - name: Verify decorator metadata matches tsc
+        run: ./scripts/verify-decorator-emit.sh
+
   # ── Build: parallel native compilation on 3 OS runners ────
   build:
     if: startsWith(github.ref, 'refs/tags/v')
