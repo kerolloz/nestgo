@@ -13,7 +13,6 @@ import (
 type TsConfig struct {
 	OutDir                 string              // compilerOptions.outDir (default "dist")
 	RootDir                string              // compilerOptions.rootDir
-	BaseURL                string              // compilerOptions.baseUrl
 	Paths                  map[string][]string // compilerOptions.paths
 	TsBuildInfoFile        string              // compilerOptions.tsBuildInfoFile
 	EmitDecoratorMetadata  bool
@@ -28,7 +27,6 @@ type tsConfigFile struct {
 type tsCompilerOpts struct {
 	OutDir                 string              `json:"outDir"`
 	RootDir                string              `json:"rootDir"`
-	BaseURL                string              `json:"baseUrl"`
 	Paths                  map[string][]string `json:"paths"`
 	TsBuildInfoFile        string              `json:"tsBuildInfoFile"`
 	EmitDecoratorMetadata  *bool               `json:"emitDecoratorMetadata"`
@@ -91,9 +89,6 @@ func loadTsConfigAbs(cwd, absPath string, depth int) (*TsConfig, error) {
 	}
 	if opts.RootDir != "" {
 		result.RootDir = opts.RootDir
-	}
-	if opts.BaseURL != "" {
-		result.BaseURL = opts.BaseURL
 	}
 	if opts.Paths != nil {
 		result.Paths = opts.Paths

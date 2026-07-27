@@ -14,6 +14,7 @@ type Rewriter struct {
 	cwd        string
 	absOutDir  string
 	sourceBase string
+	pathsBase  string // base dir for resolving paths targets (tsconfig baseUrl)
 	matchers   []pathMatcher
 	statCache  sync.Map // caches os.Stat results: path -> bool (isDir)
 }
@@ -54,8 +55,9 @@ func collectMatches(re *regexp.Regexp, content string) []match {
 	return out
 }
 
-// New creates a Rewriter.
-func New(cwd string, paths map[string][]string, outDir, rootDir string) *Rewriter {
+// New creates a Rewriter. baseURL is the tsconfig baseUrl (paths targets are
+// resolved relative to it); pass "" to resolve them against cwd.
+func New(cwd string, paths map[string][]string, outDir, rootDir, baseURL string) *Rewriter {
 	absOutDir := outDir
 	if !filepath.IsAbs(outDir) {
 		absOutDir = filepath.Join(cwd, outDir)
@@ -70,7 +72,16 @@ func New(cwd string, paths map[string][]string, outDir, rootDir string) *Rewrite
 		}
 	}
 
-	r := &Rewriter{cwd: cwd, absOutDir: absOutDir, sourceBase: sourceBase}
+	pathsBase := cwd
+	if baseURL != "" {
+		if filepath.IsAbs(baseURL) {
+			pathsBase = baseURL
+		} else {
+			pathsBase = filepath.Join(cwd, baseURL)
+		}
+	}
+
+	r := &Rewriter{cwd: cwd, absOutDir: absOutDir, sourceBase: sourceBase, pathsBase: pathsBase}
 	r.buildMatchers(paths)
 	return r
 }
@@ -89,11 +100,6 @@ func (r *Rewriter) buildMatchers(paths map[string][]string) {
 		}
 		r.matchers = append(r.matchers, m)
 	}
-}
-
-// HasPatterns returns true if the rewriter has any path aliases to resolve.
-func (r *Rewriter) HasPatterns() bool {
-	return len(r.matchers) > 0
 }
 
 // RewriteSource takes emitted JS text and rewrites path aliases to relative paths.
@@ -172,9 +178,9 @@ func (r *Rewriter) resolveAlias(specifier, fromFile string) (string, bool) {
 			var sourceTargetAbs string
 			if m.hasWildcard {
 				tplBase := strings.TrimSuffix(strings.TrimSuffix(tplClean, "/*"), "*")
-				sourceTargetAbs = filepath.Join(r.cwd, tplBase, remainder)
+				sourceTargetAbs = filepath.Join(r.pathsBase, tplBase, remainder)
 			} else {
-				sourceTargetAbs = filepath.Join(r.cwd, tplClean)
+				sourceTargetAbs = filepath.Join(r.pathsBase, tplClean)
 			}
 
 			rel, err := filepath.Rel(r.sourceBase, sourceTargetAbs)

@@ -18,14 +18,32 @@ func setupTestRewriter(t *testing.T) (*Rewriter, string) {
 	os.WriteFile(filepath.Join(srcDir, "models", "index.ts"), []byte(""), 0644)
 
 	paths := map[string][]string{
-		"@app/*":    {"src/*"},
-		"@utils/*":  {"src/utils/*"},
-		"@models":   {"src/models"},
+		"@app/*":   {"src/*"},
+		"@utils/*": {"src/utils/*"},
+		"@models":  {"src/models"},
 	}
 
 	outDir := filepath.Join(tmp, "dist")
-	r := New(tmp, paths, outDir, "src")
+	r := New(tmp, paths, outDir, "src", "")
 	return r, tmp
+}
+
+func TestRewriteSource_BaseURLRelativeTargets(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	os.MkdirAll(filepath.Join(srcDir, "utils"), 0755)
+	os.WriteFile(filepath.Join(srcDir, "utils", "helper.ts"), []byte(""), 0644)
+
+	// baseUrl "./src": targets are relative to src, not the project root.
+	paths := map[string][]string{"@utils/*": {"utils/*"}}
+	r := New(tmp, paths, filepath.Join(tmp, "dist"), "src", "src")
+
+	fileName := filepath.Join(tmp, "dist", "app.js")
+	result := r.RewriteSource(fileName, `const h = require("@utils/helper");`)
+
+	if !contains(result, "./utils/helper.js") {
+		t.Errorf("expected baseUrl-relative rewrite to ./utils/helper.js, got: %s", result)
+	}
 }
 
 func TestRewriteSource_RequireAlias(t *testing.T) {

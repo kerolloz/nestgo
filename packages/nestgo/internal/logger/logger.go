@@ -58,9 +58,3 @@ func Step(format string, a ...interface{}) {
 	msg := fmt.Sprintf(format, a...)
 	fmt.Fprint(Stdout, formatMessage("STEP", Cyan, msg))
 }
-
-// Log is a generic printer that bypasses the Nestgo prefix if needed, 
-// but adds a newline. Useful for raw output.
-func Log(format string, a ...interface{}) {
-	fmt.Fprintf(Stdout, format+"\n", a...)
-}

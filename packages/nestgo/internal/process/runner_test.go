@@ -11,10 +11,11 @@ import (
 
 func TestQuoteShellArg(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"simple", "simple"},
+		{"simple", "'simple'"},
 		{"has space", "'has space'"},
 		{"has'quote", "'has'\\''quote'"},
 		{"has$dollar", "'has$dollar'"},
+		{"has`backtick`", "'has`backtick`'"},
 	}
 	for _, tc := range cases {
 		if got := quoteShellArg(tc.in); got != tc.want {

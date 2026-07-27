@@ -79,7 +79,7 @@ func (m *Manager) loop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			
+
 			// Watch new directories
 			if event.Has(fsnotify.Create) {
 				info, err := os.Stat(event.Name)

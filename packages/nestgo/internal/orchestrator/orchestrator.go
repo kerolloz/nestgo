@@ -131,8 +131,8 @@ func (o *Orchestrator) WaitRunner() int {
 func (o *Orchestrator) Build(ctx context.Context, isRebuild bool) error {
 	if o.NestConfig.CompilerOptions.DeleteOutDir {
 		absOut := filepath.Join(o.Cwd, o.TsConfig.OutDir)
-		if !strings.HasPrefix(absOut+string(filepath.Separator), o.Cwd+string(filepath.Separator)) {
-			return fmt.Errorf("outDir %q escapes project root, refusing to delete", o.TsConfig.OutDir)
+		if absOut == o.Cwd || !strings.HasPrefix(absOut+string(filepath.Separator), o.Cwd+string(filepath.Separator)) {
+			return fmt.Errorf("outDir %q resolves to or outside the project root, refusing to delete", o.TsConfig.OutDir)
 		}
 		if err := os.RemoveAll(absOut); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to delete outDir: %w", err)
@@ -190,7 +190,7 @@ func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 
 	rebuildCh := make(chan struct{}, 1)
 	absSourceRoot := filepath.Join(o.Cwd, o.NestConfig.SourceRoot)
-	
+
 	wt, err := watcher.New(ctx, absSourceRoot, 500*time.Millisecond, func() {
 		select {
 		case rebuildCh <- struct{}{}:

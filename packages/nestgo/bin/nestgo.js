@@ -30,8 +30,8 @@ function ensureExecutable(binary) {
 }
 
 function getBinaryPath() {
-  if (process.env.NEGO_BINARY) {
-    return process.env.NEGO_BINARY;
+  if (process.env.NESTGO_BINARY) {
+    return process.env.NESTGO_BINARY;
   }
 
   const localBinary = path.join(__dirname, "..", "..", "..", "bin", "nestgo");

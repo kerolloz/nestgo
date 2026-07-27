@@ -192,9 +192,9 @@ func (r *Runner) resolveOutputFile() string {
 	return found[0]
 }
 
+// quoteShellArg always single-quotes: a blacklist of special characters is
+// too easy to get wrong (backticks were once missed, enabling command
+// substitution via sh -c).
 func quoteShellArg(arg string) string {
-	if !strings.ContainsAny(arg, " \t\n\r\"'\\$;<>|&()[]*?!#~") {
-		return arg
-	}
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
