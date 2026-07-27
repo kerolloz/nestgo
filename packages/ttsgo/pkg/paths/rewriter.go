@@ -17,6 +17,9 @@ type Rewriter struct {
 	pathsBase  string // base dir that `paths` targets resolve against
 	matchers   []pathMatcher
 	statCache  sync.Map // caches os.Stat results: path -> bool (isDir)
+
+	// packageCache caches node_modules lookups: package name -> installed.
+	packageCache sync.Map
 }
 
 type pathMatcher struct {
@@ -110,10 +113,17 @@ func (r *Rewriter) buildMatchers(paths map[string][]string) {
 
 // RewriteSource takes emitted JS text and rewrites path aliases to relative paths.
 func (r *Rewriter) RewriteSource(fileName, text string) string {
+	result, _ := r.Rewrite(fileName, text)
+	return result
+}
+
+// Rewrite is RewriteSource plus the edits it made, which AdjustSourceMap needs
+// to keep the companion .js.map pointing at the right columns.
+func (r *Rewriter) Rewrite(fileName, text string) (string, []Edit) {
 	all := collectMatches(requireRe, text)
 	all = append(all, collectMatches(fromRe, text)...)
 	if len(all) == 0 {
-		return text
+		return text, nil
 	}
 
 	regions := skipRegions(text)
@@ -126,7 +136,7 @@ func (r *Rewriter) RewriteSource(fileName, text string) string {
 		}
 		all = filtered
 		if len(all) == 0 {
-			return text
+			return text, nil
 		}
 	}
 
@@ -136,6 +146,7 @@ func (r *Rewriter) RewriteSource(fileName, text string) string {
 	sb.Grow(len(text))
 	lastPos := 0
 	modified := false
+	var edits []Edit
 
 	for _, m := range all {
 		if m.start < lastPos {
@@ -156,6 +167,11 @@ func (r *Rewriter) RewriteSource(fileName, text string) string {
 			sb.WriteString(resolved)
 			sb.WriteString(m.quote)
 			modified = true
+
+			if delta := len(resolved) - len(m.specifier); delta != 0 {
+				line, col := positionOf(text, m.start+len(m.prefix))
+				edits = append(edits, Edit{Line: line, Column: col, Delta: delta})
+			}
 		} else {
 			sb.WriteString(text[m.start:m.end])
 		}
@@ -164,13 +180,31 @@ func (r *Rewriter) RewriteSource(fileName, text string) string {
 	sb.WriteString(text[lastPos:])
 
 	if !modified {
-		return text
+		return text, nil
 	}
-	return sb.String()
+	return sb.String(), edits
+}
+
+// positionOf converts a byte offset into 0-based line and column.
+func positionOf(text string, offset int) (line, col int) {
+	if offset > len(text) {
+		offset = len(text)
+	}
+	lastNewline := strings.LastIndexByte(text[:offset], '\n')
+	line = strings.Count(text[:offset], "\n")
+	return line, offset - (lastNewline + 1)
 }
 
 func (r *Rewriter) resolveAlias(specifier, fromFile string) (string, bool) {
 	if strings.HasPrefix(specifier, ".") || strings.HasPrefix(specifier, "/") {
+		return "", false
+	}
+
+	// An installed package wins over an alias that happens to match its name.
+	// A tsconfig pattern like "@app/*" also matches the real package
+	// "@app/thing" once someone installs it, and rewriting that to a relative
+	// path breaks the import (nest-cli#838).
+	if r.isInstalledPackage(specifier) {
 		return "", false
 	}
 
@@ -216,6 +250,49 @@ func (r *Rewriter) resolveAlias(specifier, fromFile string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isInstalledPackage reports whether specifier names a package present in
+// node_modules, searching upward from the project so workspace and hoisted
+// layouts resolve the same way Node would.
+func (r *Rewriter) isInstalledPackage(specifier string) bool {
+	pkg := packageNameOf(specifier)
+	if pkg == "" {
+		return false
+	}
+
+	if cached, ok := r.packageCache.Load(pkg); ok {
+		return cached.(bool)
+	}
+
+	found := false
+	for dir := r.cwd; ; {
+		if _, err := os.Stat(filepath.Join(dir, "node_modules", filepath.FromSlash(pkg))); err == nil {
+			found = true
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	r.packageCache.Store(pkg, found)
+	return found
+}
+
+// packageNameOf extracts the package portion of a bare specifier:
+// "lodash/fp" -> "lodash", "@nestjs/common/decorators" -> "@nestjs/common".
+func packageNameOf(specifier string) string {
+	parts := strings.Split(specifier, "/")
+	if strings.HasPrefix(specifier, "@") {
+		if len(parts) < 2 {
+			return ""
+		}
+		return parts[0] + "/" + parts[1]
+	}
+	return parts[0]
 }
 
 func matchPattern(m pathMatcher, specifier string) (string, bool) {

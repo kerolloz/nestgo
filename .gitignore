@@ -50,3 +50,6 @@ packages/*/bin/
 
 # Dummy Test Projects (Keep them, but they inherit node_modules/dist ignore)
 # tests/dummy-*/
+
+# Test fixtures install their own TypeScript
+tests/*/package-lock.json
