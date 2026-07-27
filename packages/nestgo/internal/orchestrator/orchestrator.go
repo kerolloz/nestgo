@@ -6,13 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/kerolloz/nestgo/internal/assets"
 	"github.com/kerolloz/nestgo/internal/config"
 	"github.com/kerolloz/nestgo/internal/logger"
 	"github.com/kerolloz/nestgo/internal/process"
-	"github.com/kerolloz/nestgo/internal/watcher"
 	"github.com/kerolloz/ttsgo/pkg/engine"
 	"github.com/kerolloz/ttsgo/pkg/toolchain"
 	"github.com/kerolloz/ttsgo/pkg/tsc"
@@ -222,6 +220,12 @@ func (o *Orchestrator) deleteOutDir() error {
 	return nil
 }
 
+// Watch compiles continuously and restarts the application after every clean
+// build.
+//
+// The compiler does the file watching. It tracks the project's real file set
+// and recompiles incrementally, which is both more accurate and far faster
+// than watching the source directory ourselves and re-running a full build.
 func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 	logger.Step("Watching %s for changes...", o.NestConfig.SourceRoot)
 
@@ -231,42 +235,61 @@ func (o *Orchestrator) Watch(ctx context.Context, watchAssets bool) error {
 		}
 	}
 
-	rebuildCh := make(chan struct{}, 1)
-	absSourceRoot := filepath.Join(o.Cwd, o.NestConfig.SourceRoot)
-
-	wt, err := watcher.New(ctx, absSourceRoot, 500*time.Millisecond, func() {
-		select {
-		case rebuildCh <- struct{}{}:
-		default:
+	if o.NestConfig.CompilerOptions.DeleteOutDir {
+		if err := o.deleteOutDir(); err != nil {
+			return err
 		}
-	})
-	if err != nil {
-		return err
-	}
-	defer wt.Close()
-
-	// Initial build
-	if err := o.Build(ctx, false); err != nil {
-		logger.Error("Initial build failed: %v", err)
-	} else {
-		logger.Success("Build complete")
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			if o.runner != nil {
-				o.runner.Kill()
+	defer o.KillRunner()
+
+	err := engine.Watch(ctx, engine.Options{
+		Cwd:          o.Cwd,
+		TsConfigPath: o.NestConfig.CompilerOptions.TsConfigPath,
+		Bin:          o.compilerPath(),
+		Emit:         true,
+	}, func(res *engine.Result) error {
+		if len(res.Diagnostics) > 0 {
+			for _, d := range res.Diagnostics {
+				logger.Error("%s", d)
 			}
+			// Leave the running process alone: it is still serving the last
+			// good build, which beats taking the app down over a typo.
 			return nil
-		case <-rebuildCh:
-			logger.Step("Change detected — rebuilding...")
-			if err := o.Build(ctx, true); err != nil {
-				logger.Error("Build failed: %v", err)
-			} else {
-				logger.Success("Rebuild complete")
-			}
 		}
+
+		// The compiler completes a cycle whenever it re-checks, including when
+		// nothing needed re-emitting. Restarting then would bounce the app for
+		// no reason.
+		if !res.First && len(res.EmittedFiles) == 0 {
+			return nil
+		}
+
+		if err := o.Assets.Copy(); err != nil {
+			logger.Error("Asset copy failed: %v", err)
+		}
+
+		o.restart()
+		logger.Success("Build complete")
+		return nil
+	})
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// restart replaces the running application. The old process is killed only
+// after a successful compile, so a broken edit never leaves nothing running.
+func (o *Orchestrator) restart() {
+	if o.runner == nil {
+		return
+	}
+	logger.Step("Restarting...")
+	o.runner.Kill()
+	if err := o.runner.Start(); err != nil {
+		logger.Error("Failed to start process: %v", err)
 	}
 }
 

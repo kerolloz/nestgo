@@ -45,6 +45,9 @@ type Result struct {
 
 	// Problems are TypeScript 7 migration issues found in the config.
 	Problems []tsc.Problem
+
+	// First reports whether this was the initial compilation of a watch run.
+	First bool
 }
 
 // CompileWithRewrite compiles the project and rewrites path aliases in the
@@ -99,6 +102,54 @@ func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// Watch compiles continuously, calling onBuild after each compilation settles.
+//
+// The compiler owns file watching: it knows the project's real file set and
+// recompiles incrementally, so a rebuild costs a fraction of a cold build and
+// only the files that actually changed get rewritten.
+func Watch(ctx context.Context, opts Options, onBuild func(*Result) error) error {
+	bin := opts.Bin
+	if bin == "" {
+		located, err := toolchain.Locate(opts.Cwd)
+		if err != nil {
+			return err
+		}
+		bin = located.Path
+	}
+
+	runOpts := tsc.Options{
+		Bin:         bin,
+		Cwd:         opts.Cwd,
+		Project:     opts.TsConfigPath,
+		OutDir:      opts.OutDir,
+		Incremental: true,
+	}
+
+	cfg, err := tsc.LoadConfig(ctx, runOpts)
+	if err != nil {
+		return err
+	}
+
+	return tsc.Watch(ctx, runOpts, nil, func(cycle tsc.Cycle) error {
+		result := &Result{
+			Config:       cfg,
+			EmittedFiles: cycle.EmittedFiles,
+			Problems:     tsc.Preflight(cfg),
+			First:        cycle.First,
+		}
+		for _, d := range cycle.Diagnostics {
+			result.Diagnostics = append(result.Diagnostics, d.String())
+		}
+
+		if !cycle.Failed() && len(cycle.EmittedFiles) > 0 {
+			if err := rewriteEmitted(cfg, opts, cycle.EmittedFiles); err != nil {
+				return err
+			}
+		}
+		return onBuild(result)
+	})
 }
 
 // invalidateStaleBuildInfo drops the incremental state when the output it
