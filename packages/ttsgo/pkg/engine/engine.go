@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kerolloz/ttsgo/pkg/paths"
 	shimcompiler "github.com/microsoft/typescript-go/shim/compiler"
 	shimcore "github.com/microsoft/typescript-go/shim/core"
 	shimtsoptions "github.com/microsoft/typescript-go/shim/tsoptions"
-	"github.com/kerolloz/ttsgo/pkg/paths"
 )
 
 // Options defines the parameters for a compilation run.
@@ -112,7 +112,16 @@ func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
 		rootDir = prog.ParsedConfig.CompilerOptions().RootDir
 	}
 
-	rewriter := paths.New(opts.Cwd, pathMap, outDir, rootDir)
+	// GetPathsBasePath returns baseUrl when set, otherwise the directory of the
+	// tsconfig that declared `paths` (not necessarily Cwd), and "" when the
+	// project has no paths at all.
+	rewriter := paths.New(paths.Options{
+		Cwd:       opts.Cwd,
+		Paths:     pathMap,
+		OutDir:    outDir,
+		RootDir:   rootDir,
+		PathsBase: prog.ParsedConfig.CompilerOptions().GetPathsBasePath(opts.Cwd),
+	})
 
 	// --- Concurrent I/O pipeline ---
 	// The compiler calls WriteFile synchronously per source file, but I/O
@@ -155,16 +164,16 @@ func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
 			defer wg.Done()
 			for j := range jobs {
 				dir := filepath.Dir(j.fileName)
-				
+
 				// Get or create a Once for this directory
 				actual, _ := dirOnceMap.LoadOrStore(dir, &sync.Once{})
 				once := actual.(*sync.Once)
-				
+
 				var mkdirErr error
 				once.Do(func() {
 					mkdirErr = os.MkdirAll(dir, 0755)
 				})
-				
+
 				if mkdirErr != nil {
 					mu.Lock()
 					if writeErr == nil {
@@ -201,10 +210,10 @@ func CompileWithRewrite(ctx context.Context, opts Options) (*Result, error) {
 		buf := []byte(text)
 
 		mu.Lock()
-		emitted = append(emitted, fileName)
+		emitted = append(emitted, absFileName)
 		mu.Unlock()
 
-		jobs <- writeJob{fileName: fileName, data: buf}
+		jobs <- writeJob{fileName: absFileName, data: buf}
 		return nil
 	})
 

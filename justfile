@@ -13,7 +13,11 @@ build:
 	cd packages/ttsgo && go build -ldflags="-s -w" -o ../../bin/ttsgo ./cmd/ttsgo
 	cd packages/nestgo && go build -ldflags="-s -w" -o ../../bin/nestgo .
 
-# Clean build artifacts
+# Clean build artifacts.
+# Only the release-staged binaries under packages/*/bin are removed — the
+# package bin/ directories also hold the committed launcher scripts, so they
+# must not be deleted wholesale.
 clean:
 	rm -rf bin
-	find packages -name "bin" -type d -exec rm -rf {} + 2>/dev/null || true
+	rm -f packages/*/bin/nestgo packages/*/bin/nestgo.exe
+	rm -f packages/*/bin/ttsgo packages/*/bin/ttsgo.exe

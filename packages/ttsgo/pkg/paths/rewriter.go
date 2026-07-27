@@ -14,6 +14,7 @@ type Rewriter struct {
 	cwd        string
 	absOutDir  string
 	sourceBase string
+	pathsBase  string // base dir that `paths` targets resolve against
 	matchers   []pathMatcher
 	statCache  sync.Map // caches os.Stat results: path -> bool (isDir)
 }
@@ -54,24 +55,40 @@ func collectMatches(re *regexp.Regexp, content string) []match {
 	return out
 }
 
+// Options configures a Rewriter. Every directory may be absolute or relative
+// to Cwd.
+type Options struct {
+	Cwd     string
+	Paths   map[string][]string // tsconfig compilerOptions.paths
+	OutDir  string              // where emitted files land
+	RootDir string              // tsconfig rootDir; the source tree that OutDir mirrors
+
+	// PathsBase is the directory that Paths targets resolve against. Under
+	// TypeScript this is baseUrl when set, otherwise the directory of the
+	// tsconfig that declared the paths — which is not necessarily Cwd, e.g.
+	// when compiling -p configs/tsconfig.json. Empty means Cwd.
+	PathsBase string
+}
+
 // New creates a Rewriter.
-func New(cwd string, paths map[string][]string, outDir, rootDir string) *Rewriter {
-	absOutDir := outDir
-	if !filepath.IsAbs(outDir) {
-		absOutDir = filepath.Join(cwd, outDir)
-	}
-
-	sourceBase := cwd
-	if rootDir != "" {
-		if filepath.IsAbs(rootDir) {
-			sourceBase = rootDir
-		} else {
-			sourceBase = filepath.Join(cwd, rootDir)
+func New(opts Options) *Rewriter {
+	resolve := func(p, fallback string) string {
+		if p == "" {
+			return fallback
 		}
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(opts.Cwd, p)
 	}
 
-	r := &Rewriter{cwd: cwd, absOutDir: absOutDir, sourceBase: sourceBase}
-	r.buildMatchers(paths)
+	r := &Rewriter{
+		cwd:        opts.Cwd,
+		absOutDir:  resolve(opts.OutDir, opts.Cwd),
+		sourceBase: resolve(opts.RootDir, opts.Cwd),
+		pathsBase:  resolve(opts.PathsBase, opts.Cwd),
+	}
+	r.buildMatchers(opts.Paths)
 	return r
 }
 
@@ -89,11 +106,6 @@ func (r *Rewriter) buildMatchers(paths map[string][]string) {
 		}
 		r.matchers = append(r.matchers, m)
 	}
-}
-
-// HasPatterns returns true if the rewriter has any path aliases to resolve.
-func (r *Rewriter) HasPatterns() bool {
-	return len(r.matchers) > 0
 }
 
 // RewriteSource takes emitted JS text and rewrites path aliases to relative paths.
@@ -172,9 +184,9 @@ func (r *Rewriter) resolveAlias(specifier, fromFile string) (string, bool) {
 			var sourceTargetAbs string
 			if m.hasWildcard {
 				tplBase := strings.TrimSuffix(strings.TrimSuffix(tplClean, "/*"), "*")
-				sourceTargetAbs = filepath.Join(r.cwd, tplBase, remainder)
+				sourceTargetAbs = filepath.Join(r.pathsBase, tplBase, remainder)
 			} else {
-				sourceTargetAbs = filepath.Join(r.cwd, tplClean)
+				sourceTargetAbs = filepath.Join(r.pathsBase, tplClean)
 			}
 
 			rel, err := filepath.Rel(r.sourceBase, sourceTargetAbs)

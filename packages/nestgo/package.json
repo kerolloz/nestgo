@@ -20,9 +20,6 @@
   ],
   "author": "Kerollos Magdy",
   "license": "MIT",
-  "dependencies": {
-    "ttsgo": "^0.1.0"
-  },
   "optionalDependencies": {
     "@nestgo/core-darwin-arm64": "0.1.0",
     "@nestgo/core-darwin-x64": "0.1.0",
@@ -33,6 +30,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kerolloz/ttsgo"
+    "url": "https://github.com/kerolloz/nestgo"
   }
 }

@@ -60,7 +60,7 @@ type CompilerOptions struct {
 	DeleteOutDir bool    `json:"deleteOutDir"`
 	WatchAssets  bool    `json:"watchAssets"`
 	Assets       []Asset `json:"assets"`
-	BuilderType string         // resolved to "tsc", "swc", or "webpack"
+	BuilderType  string  // resolved to "tsc", "swc", or "webpack"
 }
 
 type compilerOptionsRaw struct {

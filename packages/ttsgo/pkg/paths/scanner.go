@@ -3,6 +3,11 @@ package paths
 // skipRegions scans text and returns sorted [start, end) intervals that
 // represent comments and string literals where import patterns should not
 // be matched.
+//
+// Known limitation: regex literals are not recognized. A regex containing an
+// unbalanced quote (e.g. /don't/) opens a phantom string region, so imports
+// after it on that file are left unrewritten. Fixing it properly needs a real
+// JS tokenizer.
 func skipRegions(text string) []region {
 	var regions []region
 	i := 0

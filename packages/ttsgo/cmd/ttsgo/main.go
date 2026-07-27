@@ -9,6 +9,9 @@ import (
 	"github.com/kerolloz/ttsgo/pkg/engine"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -21,9 +24,15 @@ func run() error {
 	project := fs.String("p", "tsconfig.json", "Path to tsconfig.json")
 	outDir := fs.String("outDir", "", "Redirect output structure to the directory")
 	noEmit := fs.Bool("noEmit", false, "Do not emit outputs")
-	
+	showVersion := fs.Bool("version", false, "Print version and exit")
+
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
+	}
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
 	}
 
 	cwd, err := os.Getwd()
