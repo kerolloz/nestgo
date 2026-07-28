@@ -322,3 +322,37 @@ func TestPositionOf(t *testing.T) {
 		}
 	}
 }
+
+// A regex containing an apostrophe used to open a phantom string region that
+// swallowed the rest of the file, so every import after it was silently left
+// unrewritten — wrong output, with nothing to indicate it. These cover the
+// scanner through the behaviour that actually matters.
+func TestRewriteSource_ImportsAfterRegexLiterals(t *testing.T) {
+	for _, tc := range []struct{ name, code string }{
+		{"apostrophe in regex", `const re = /don't/;`},
+		{"quote in regex", `const re = /say "hi"/;`},
+		{"slash in character class", `const re = /[/'"]+/;`},
+		{"division, not a regex", `const ratio = total / count;`},
+		{"unterminated regex", `const x = cond ? a : /oops`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, tmp := setupTestRewriter(t)
+			input := tc.code + "\nconst h = require(\"@utils/helper\");\n"
+
+			got := r.RewriteSource(filepath.Join(tmp, "dist", "app.js"), input)
+			if !contains(got, "./utils/helper.js") {
+				t.Errorf("the import after %s should still be rewritten, got:\n%s", tc.name, got)
+			}
+		})
+	}
+}
+
+// An alias inside a regex is not an import and must be left alone.
+func TestRewriteSource_SkipsAliasInsideRegex(t *testing.T) {
+	r, tmp := setupTestRewriter(t)
+	input := "const re = /require\\(\"@utils\\/helper\"\\)/;\n"
+
+	if got := r.RewriteSource(filepath.Join(tmp, "dist", "app.js"), input); got != input {
+		t.Errorf("regex contents should not be rewritten, got:\n%s", got)
+	}
+}

@@ -1,0 +1,68 @@
+name: TypeScript canary
+
+# nestgo drives whatever TypeScript the user installed, so a change in the
+# compiler reaches users without anything in this repository changing. This job
+# builds against the TypeScript nightly on a schedule, so a breaking change in
+# 7.1 surfaces here rather than in someone's project.
+#
+# It is allowed to fail: a red canary means upstream moved, not that this
+# repository is broken.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - uses: extractions/setup-just@v3
+
+      - name: Build
+        run: just build
+
+      - name: Install fixtures against typescript@next
+        run: |
+          for fixture in tests/dummy-ts tests/decorators tests/nest-app; do
+            npm install --prefix "$fixture" --no-audit --no-fund
+            npm install --prefix "$fixture" --no-audit --no-fund --save-dev typescript@next
+          done
+          node -p "'typescript ' + require('./tests/dummy-ts/node_modules/typescript/package.json').version"
+
+      - name: E2E — ttsgo
+        working-directory: tests/dummy-ts
+        run: |
+          rm -rf dist
+          ../../bin/ttsgo -p tsconfig.json
+          OUT=$(node dist/main.js)
+          echo "$OUT"
+          [ "$OUT" = "App running. 2 + 3 = 5" ] || { echo "unexpected output"; exit 1; }
+
+      - name: Verify decorator metadata still matches tsc
+        run: ./scripts/verify-decorator-emit.sh
+
+      - name: E2E — NestJS app
+        run: ./scripts/verify-nest-app.sh
+
+      - name: Report
+        if: failure()
+        run: |
+          echo "::warning::nestgo broke against typescript@next."
+          echo "This means an upcoming TypeScript release changes behaviour nestgo depends on:"
+          echo "  diagnostic format, --listEmittedFiles output, --showConfig shape,"
+          echo "  watch-mode status lines, or decorator metadata emit."

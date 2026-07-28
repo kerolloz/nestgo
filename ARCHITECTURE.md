@@ -352,17 +352,17 @@ fixture in CI.
 remaining gap against the Nest CLI for projects that use them.
 
 **Ongoing — NestJS 12 readiness.** v12 moves the ecosystem toward ESM, which makes
-extension-correct rewriting mandatory rather than optional. A scheduled CI job should
-track `typescript@next` so TypeScript 7.1 changes surface before they reach users.
+extension-correct rewriting mandatory rather than optional.
 
-**Known limitations.**
+**Ongoing — the TypeScript canary.** Because nestgo drives whatever compiler the user
+installed, an upstream change reaches users without anything here changing. A weekly job
+(`.github/workflows/canary.yml`) runs the end-to-end checks against `typescript@next`, so
+a breaking change in 7.1 surfaces here first. It is allowed to fail: red means upstream
+moved.
 
-- The specifier scanner does not recognise regex literals. A regex containing an
-  unbalanced quote opens a phantom string region, and imports after it on that file are
-  left unrewritten. Fixing it properly needs a real JavaScript tokenizer.
-- Emitted CommonJS uses `require("./service.js")` where `nest build` emits
-  `require("./service")`. Both resolve identically; the explicit form is what ESM
-  requires.
+**Known limitation.** Emitted CommonJS uses `require("./service.js")` where `nest build`
+emits `require("./service")`. Both resolve identically; the explicit form is what ESM
+requires.
 
 ## 8. Verification
 
