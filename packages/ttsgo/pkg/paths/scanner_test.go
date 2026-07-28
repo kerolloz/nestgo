@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -112,5 +113,40 @@ func TestIsInSkipRegion(t *testing.T) {
 func TestIsInSkipRegion_Empty(t *testing.T) {
 	if isInSkipRegion(5, nil) {
 		t.Error("expected false for empty regions")
+	}
+}
+
+// Inside a regex, import-looking text must be skipped.
+func TestRegexLiteralIsSkipped(t *testing.T) {
+	text := `const re = /require("@a\/b")/;`
+
+	regions := skipRegions(text)
+	inside := strings.Index(text, "@a")
+	if !isInSkipRegion(inside, regions) {
+		t.Errorf("text inside a regex should be skipped; regions=%v", regions)
+	}
+}
+
+func TestStartsRegexLiteralAfterValues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prev byte
+		want bool
+	}{
+		{"start of input", 0, true},
+		{"after (", '(', true},
+		{"after =", '=', true},
+		{"after ,", ',', true},
+		{"after return keyword's last byte", 'n', false},
+		{"after identifier", 'x', false},
+		{"after digit", '9', false},
+		{"after )", ')', false},
+		{"after ]", ']', false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := startsRegexLiteral("/a/", 0, tc.prev); got != tc.want {
+				t.Errorf("startsRegexLiteral(prev=%q) = %v, want %v", tc.prev, got, tc.want)
+			}
+		})
 	}
 }
